@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   globalShortcut,
   ipcMain,
@@ -29,14 +30,36 @@ import {
   initUpdater,
   installUpdate
 } from './updater'
+import {
+  getMachineCode,
+  verifyLicenseCode,
+  type LicensePayload
+} from './license'
 import type {
+  ActivationResult,
   Anniversary,
   AnniversaryInput,
   AnniversaryPatch,
   AnniversaryRepeat,
   CaptureItem,
+  Checkin,
+  CheckinInput,
+  CheckinPatch,
+  CheckinPeriod,
+  CheckinRecord,
+  CleanupKind,
+  CleanupResult,
   CloseAction,
+  Course,
+  CourseInput,
+  CoursePatch,
+  CoursePlan,
+  CoursePlanInput,
+  CoursePlanPatch,
+  CoursePlanStatus,
+  CourseSemester,
   EdgeSide,
+  LicenseStatus,
   Note,
   NoteInput,
   NotePatch,
@@ -57,6 +80,7 @@ import type {
   TaskInput,
   TaskPatch,
   TaskPriority,
+  Weekday,
   WindowCorner
 } from '../shared/types'
 
@@ -69,6 +93,10 @@ app.commandLine.appendSwitch('high-dpi-support', '1')
 const DEFAULT_ACCENT = '#8a6a3f'
 const STATUSES: ProjectStatus[] = ['active', 'paused', 'done']
 const PRIORITIES: TaskPriority[] = ['low', 'normal', 'high']
+const PLAN_STATUSES: CoursePlanStatus[] = ['considering', 'selected', 'dropped']
+const SEMESTERS: CourseSemester[] = ['fall', 'spring']
+const CHECKIN_PERIODS: CheckinPeriod[] = ['week', 'month', 'year']
+const WEEKDAYS: Weekday[] = [1, 2, 3, 4, 5, 6, 7]
 const CORNERS: WindowCorner[] = [
   'center',
   'top-left',
@@ -93,6 +121,7 @@ interface AppConfig {
   edgeSide?: EdgeSide
   autoCheckUpdate?: boolean
   windowBounds?: { x: number; y: number; width: number; height: number }
+  license?: string
 }
 
 interface StoreData {
@@ -104,13 +133,20 @@ interface StoreData {
   reflections: Reflection[]
   notes: Note[]
   captures: CaptureItem[]
+  courses: Course[]
+  coursePlans: CoursePlan[]
+  checkins: Checkin[]
+  checkinRecords: CheckinRecord[]
 }
 
 let mainWindow: BrowserWindow | null = null
 let quickWindow: BrowserWindow | null = null
 let edgeWindow: BrowserWindow | null = null
+let activationWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
+let appStarted = false
+let licenseInfo: LicensePayload | null = null
 
 let config: AppConfig = {}
 let store: StoreData = {
@@ -121,7 +157,11 @@ let store: StoreData = {
   anniversaries: [],
   reflections: [],
   notes: [],
-  captures: []
+  captures: [],
+  courses: [],
+  coursePlans: [],
+  checkins: [],
+  checkinRecords: []
 }
 let dataDir = ''
 let dataFile = ''
@@ -195,7 +235,28 @@ function normalizeStore(raw: unknown): StoreData {
     anniversaries: Array.isArray(data?.anniversaries) ? data.anniversaries : [],
     reflections: Array.isArray(data?.reflections) ? data.reflections : [],
     notes: Array.isArray(data?.notes) ? data.notes : [],
-    captures: Array.isArray(data?.captures) ? data.captures : []
+    captures: Array.isArray(data?.captures) ? data.captures : [],
+    courses: Array.isArray(data?.courses) ? data.courses : [],
+    coursePlans: Array.isArray(data?.coursePlans)
+      ? data.coursePlans.map((plan) => ({
+          ...plan,
+          semester: plan.semester === 'spring' ? 'spring' : 'fall'
+        }))
+      : [],
+    checkins: Array.isArray(data?.checkins) ? data.checkins : [],
+    checkinRecords: Array.isArray(data?.checkinRecords)
+      ? data.checkinRecords
+      : []
+  }
+}
+
+function currentLicenseStatus(): LicenseStatus {
+  return {
+    activated: Boolean(licenseInfo),
+    machineCode: getMachineCode(),
+    label: licenseInfo?.label,
+    issuedAt: licenseInfo?.iat,
+    version: app.getVersion()
   }
 }
 
@@ -243,7 +304,19 @@ function snapshot(): Snapshot {
     reflections: store.reflections,
     notes: store.notes,
     captures: store.captures,
+    courses: [...store.courses].sort(
+      (a, b) =>
+        a.weekday - b.weekday ||
+        a.startTime.localeCompare(b.startTime) ||
+        a.createdAt - b.createdAt
+    ),
+    coursePlans: [...store.coursePlans].sort(
+      (a, b) => b.createdAt - a.createdAt
+    ),
+    checkins: [...store.checkins].sort((a, b) => a.createdAt - b.createdAt),
+    checkinRecords: store.checkinRecords,
     settings: currentSettings(),
+    license: currentLicenseStatus(),
     version: app.getVersion()
   }
 }
@@ -270,10 +343,14 @@ function preferredDataDir(): string {
   return join(app.getPath('userData'), 'data')
 }
 
+function initConfig(): void {
+  configFile = join(app.getPath('userData'), 'config.json')
+  config = readJson<AppConfig>(configFile) ?? {}
+}
+
 function initStore(): void {
   const userDataDir = app.getPath('userData')
-  configFile = join(userDataDir, 'config.json')
-  config = readJson<AppConfig>(configFile) ?? {}
+  initConfig()
 
   const configured = typeof config.dataDir === 'string' ? config.dataDir : ''
   const fallbackDir = join(userDataDir, 'data')
@@ -722,6 +799,10 @@ function applyEdgeBehavior(previous: Settings, next: Settings): void {
 }
 
 function showMainWindow(): void {
+  if (!appStarted) {
+    showActivationWindow()
+    return
+  }
   if (!mainWindow) {
     mainWindow = createMainWindow()
     return
@@ -736,6 +817,10 @@ function showMainWindow(): void {
 }
 
 function toggleMainWindow(): void {
+  if (!appStarted) {
+    showActivationWindow()
+    return
+  }
   if (edgeHidden) {
     showFromEdge()
     return
@@ -952,6 +1037,108 @@ function sanitizeProjectInput(input: ProjectInput): ProjectInput | null {
     startDate: normalizeDate(input.startDate, todayISO()),
     targetDate: normalizeDate(input.targetDate, '')
   }
+}
+
+function normalizeColor(value: unknown, fallback = DEFAULT_ACCENT): string {
+  return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
+    ? value
+    : fallback
+}
+
+function normalizeWeekday(value: unknown, fallback: Weekday = 1): Weekday {
+  const day = Number(value)
+  return WEEKDAYS.includes(day as Weekday) ? (day as Weekday) : fallback
+}
+
+function sanitizeCourseInput(input: CourseInput): CourseInput | null {
+  if (!input || typeof input.name !== 'string' || !input.name.trim()) return null
+
+  const startTime = normalizeTime(input.startTime)
+  const endTime = normalizeTime(input.endTime)
+  if (!startTime || !endTime || startTime >= endTime) return null
+
+  return {
+    name: input.name.trim().slice(0, 120),
+    teacher:
+      typeof input.teacher === 'string' ? input.teacher.trim().slice(0, 80) : '',
+    location:
+      typeof input.location === 'string'
+        ? input.location.trim().slice(0, 120)
+        : '',
+    weekday: normalizeWeekday(input.weekday),
+    startTime,
+    endTime,
+    weeks: typeof input.weeks === 'string' ? input.weeks.trim().slice(0, 80) : '',
+    color: normalizeColor(input.color),
+    note: typeof input.note === 'string' ? input.note.slice(0, 2000) : ''
+  }
+}
+
+function sanitizeCoursePlanInput(input: CoursePlanInput): CoursePlanInput | null {
+  const base = sanitizeCourseInput(input)
+  if (!base) return null
+
+  return {
+    ...base,
+    semester: SEMESTERS.includes(input.semester as CourseSemester)
+      ? (input.semester as CourseSemester)
+      : 'fall',
+    status: PLAN_STATUSES.includes(input.status as CoursePlanStatus)
+      ? (input.status as CoursePlanStatus)
+      : 'considering'
+  }
+}
+
+function normalizeCheckinPeriod(value: unknown): CheckinPeriod {
+  return CHECKIN_PERIODS.includes(value as CheckinPeriod)
+    ? (value as CheckinPeriod)
+    : 'month'
+}
+
+function defaultCheckinTarget(period: CheckinPeriod): number {
+  if (period === 'week') return 5
+  if (period === 'year') return 100
+  return 20
+}
+
+function sanitizeCheckinInput(input: CheckinInput): CheckinInput | null {
+  if (!input || typeof input.name !== 'string' || !input.name.trim()) return null
+
+  const period = normalizeCheckinPeriod(input.period)
+  const target = Number(input.targetDays)
+  return {
+    name: input.name.trim().slice(0, 80),
+    color: normalizeColor(input.color),
+    period,
+    targetDays: Number.isFinite(target)
+      ? clamp(Math.round(target), 1, 366)
+      : defaultCheckinTarget(period),
+    note: typeof input.note === 'string' ? input.note.slice(0, 1000) : ''
+  }
+}
+
+function cleanupStore(kind: CleanupKind): number {
+  const today = todayISO()
+  let removed = 0
+
+  if (kind === 'completedTasks') {
+    const before = store.tasks.length
+    store.tasks = store.tasks.filter((task) => !task.done)
+    removed = before - store.tasks.length
+  } else if (kind === 'pastReflections') {
+    const before = store.reflections.length
+    store.reflections = store.reflections.filter((item) => item.date >= today)
+    removed = before - store.reflections.length
+  } else if (kind === 'expiredAnniversaries') {
+    const before = store.anniversaries.length
+    store.anniversaries = store.anniversaries.filter(
+      (item) => !(item.repeat === 'once' && item.date < today)
+    )
+    removed = before - store.anniversaries.length
+  }
+
+  if (removed > 0) persistStore()
+  return removed
 }
 
 function registerIpc(): void {
@@ -1386,6 +1573,263 @@ function registerIpc(): void {
 
   ipcMain.handle('capture:list', () => store.captures)
 
+  ipcMain.handle('course:create', (_event, raw: CourseInput) => {
+    const input = sanitizeCourseInput(raw)
+    if (!input) return null
+
+    const now = Date.now()
+    const course: Course = {
+      id: randomUUID(),
+      name: input.name,
+      teacher: input.teacher ?? '',
+      location: input.location ?? '',
+      weekday: input.weekday ?? 1,
+      startTime: input.startTime ?? '08:00',
+      endTime: input.endTime ?? '09:30',
+      weeks: input.weeks ?? '',
+      color: input.color ?? DEFAULT_ACCENT,
+      note: input.note ?? '',
+      createdAt: now,
+      updatedAt: now
+    }
+
+    store.courses.push(course)
+    persistStore()
+    return course
+  })
+
+  ipcMain.handle('course:update', (_event, id: string, patch: CoursePatch) => {
+    const course = store.courses.find((item) => item.id === id)
+    if (!course || !patch || typeof patch !== 'object') return null
+
+    const next = sanitizeCourseInput({
+      name: typeof patch.name === 'string' ? patch.name : course.name,
+      teacher: typeof patch.teacher === 'string' ? patch.teacher : course.teacher,
+      location:
+        typeof patch.location === 'string' ? patch.location : course.location,
+      weekday: patch.weekday ?? course.weekday,
+      startTime:
+        typeof patch.startTime === 'string' ? patch.startTime : course.startTime,
+      endTime:
+        typeof patch.endTime === 'string' ? patch.endTime : course.endTime,
+      weeks: typeof patch.weeks === 'string' ? patch.weeks : course.weeks,
+      color: typeof patch.color === 'string' ? patch.color : course.color,
+      note: typeof patch.note === 'string' ? patch.note : course.note
+    })
+    if (!next) return null
+
+    Object.assign(course, next, { updatedAt: Date.now() })
+    persistStore()
+    return course
+  })
+
+  ipcMain.handle('course:delete', (_event, id: string) => {
+    const before = store.courses.length
+    store.courses = store.courses.filter((item) => item.id !== id)
+    if (store.courses.length !== before) persistStore()
+  })
+
+  ipcMain.handle('course-plan:create', (_event, raw: CoursePlanInput) => {
+    const input = sanitizeCoursePlanInput(raw)
+    if (!input) return null
+
+    const now = Date.now()
+    const plan: CoursePlan = {
+      id: randomUUID(),
+      name: input.name,
+      teacher: input.teacher ?? '',
+      location: input.location ?? '',
+      weekday: input.weekday ?? 1,
+      startTime: input.startTime ?? '08:00',
+      endTime: input.endTime ?? '09:30',
+      weeks: input.weeks ?? '',
+      semester: input.semester ?? 'fall',
+      status: input.status ?? 'considering',
+      note: input.note ?? '',
+      color: input.color ?? DEFAULT_ACCENT,
+      createdAt: now,
+      updatedAt: now
+    }
+
+    store.coursePlans.unshift(plan)
+    persistStore()
+    return plan
+  })
+
+  ipcMain.handle(
+    'course-plan:update',
+    (_event, id: string, patch: CoursePlanPatch) => {
+      const plan = store.coursePlans.find((item) => item.id === id)
+      if (!plan || !patch || typeof patch !== 'object') return null
+
+      const next = sanitizeCoursePlanInput({
+        name: typeof patch.name === 'string' ? patch.name : plan.name,
+        teacher: typeof patch.teacher === 'string' ? patch.teacher : plan.teacher,
+        location:
+          typeof patch.location === 'string' ? patch.location : plan.location,
+        weekday: patch.weekday ?? plan.weekday,
+        startTime:
+          typeof patch.startTime === 'string' ? patch.startTime : plan.startTime,
+        endTime:
+          typeof patch.endTime === 'string' ? patch.endTime : plan.endTime,
+        weeks: typeof patch.weeks === 'string' ? patch.weeks : plan.weeks,
+        semester: patch.semester ?? plan.semester,
+        status: patch.status ?? plan.status,
+        note: typeof patch.note === 'string' ? patch.note : plan.note,
+        color: typeof patch.color === 'string' ? patch.color : plan.color
+      })
+      if (!next) return null
+
+      Object.assign(plan, next, { updatedAt: Date.now() })
+      persistStore()
+      return plan
+    }
+  )
+
+  ipcMain.handle('course-plan:delete', (_event, id: string) => {
+    const before = store.coursePlans.length
+    store.coursePlans = store.coursePlans.filter((item) => item.id !== id)
+    if (store.coursePlans.length !== before) persistStore()
+  })
+
+  ipcMain.handle('course-plan:promote', (_event, id: string) => {
+    const plan = store.coursePlans.find((item) => item.id === id)
+    if (!plan) return null
+
+    const existing = store.courses.find(
+      (course) =>
+        course.name === plan.name &&
+        course.weekday === plan.weekday &&
+        course.startTime === plan.startTime &&
+        course.endTime === plan.endTime
+    )
+
+    let course = existing
+    if (!course) {
+      const now = Date.now()
+      course = {
+        id: randomUUID(),
+        name: plan.name,
+        teacher: plan.teacher,
+        location: plan.location,
+        weekday: plan.weekday,
+        startTime: plan.startTime,
+        endTime: plan.endTime,
+        weeks: plan.weeks,
+        color: plan.color,
+        note: plan.note,
+        createdAt: now,
+        updatedAt: now
+      }
+      store.courses.push(course)
+    }
+
+    plan.status = 'selected'
+    plan.updatedAt = Date.now()
+    persistStore()
+    return { course, plan }
+  })
+
+  ipcMain.handle('checkin:create', (_event, raw: CheckinInput) => {
+    const input = sanitizeCheckinInput(raw)
+    if (!input) return null
+
+    const now = Date.now()
+    const checkin: Checkin = {
+      id: randomUUID(),
+      name: input.name,
+      color: input.color ?? DEFAULT_ACCENT,
+      targetDays: input.targetDays ?? 20,
+      period: input.period ?? 'month',
+      note: input.note ?? '',
+      createdAt: now,
+      updatedAt: now
+    }
+
+    store.checkins.push(checkin)
+    persistStore()
+    return checkin
+  })
+
+  ipcMain.handle('checkin:update', (_event, id: string, patch: CheckinPatch) => {
+    const checkin = store.checkins.find((item) => item.id === id)
+    if (!checkin || !patch || typeof patch !== 'object') return null
+
+    const next = sanitizeCheckinInput({
+      name: typeof patch.name === 'string' ? patch.name : checkin.name,
+      color: typeof patch.color === 'string' ? patch.color : checkin.color,
+      targetDays:
+        typeof patch.targetDays === 'number'
+          ? patch.targetDays
+          : checkin.targetDays,
+      period: patch.period ?? checkin.period,
+      note: typeof patch.note === 'string' ? patch.note : checkin.note
+    })
+    if (!next) return null
+
+    Object.assign(checkin, next, { updatedAt: Date.now() })
+    persistStore()
+    return checkin
+  })
+
+  ipcMain.handle('checkin:delete', (_event, id: string) => {
+    const before = store.checkins.length
+    store.checkins = store.checkins.filter((item) => item.id !== id)
+    if (store.checkins.length !== before) {
+      store.checkinRecords = store.checkinRecords.filter(
+        (record) => record.checkinId !== id
+      )
+      persistStore()
+    }
+  })
+
+  ipcMain.handle(
+    'checkin:toggle',
+    (_event, checkinId: string, date: string) => {
+      if (
+        !store.checkins.some((item) => item.id === checkinId) ||
+        typeof date !== 'string' ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+        date > todayISO()
+      ) {
+        return null
+      }
+
+      const existing = store.checkinRecords.find(
+        (record) => record.checkinId === checkinId && record.date === date
+      )
+      if (existing) {
+        store.checkinRecords = store.checkinRecords.filter(
+          (record) => record.id !== existing.id
+        )
+        persistStore()
+        return { checked: false, record: null }
+      }
+
+      const record: CheckinRecord = {
+        id: randomUUID(),
+        checkinId,
+        date,
+        createdAt: Date.now()
+      }
+      store.checkinRecords.push(record)
+      persistStore()
+      return { checked: true, record }
+    }
+  )
+
+  ipcMain.handle('data:cleanup', (_event, kind: CleanupKind): CleanupResult => {
+    if (
+      kind !== 'completedTasks' &&
+      kind !== 'pastReflections' &&
+      kind !== 'expiredAnniversaries'
+    ) {
+      return { removed: 0, snapshot: snapshot() }
+    }
+    const removed = cleanupStore(kind)
+    return { removed, snapshot: snapshot() }
+  })
+
   ipcMain.handle('settings:update', (_event, patch: SettingsPatch) => {
     const previous = currentSettings()
 
@@ -1606,45 +2050,155 @@ function registerIpc(): void {
   })
 }
 
+function loadStoredLicense(): boolean {
+  const code = typeof config.license === 'string' ? config.license : ''
+  if (!code) return false
+
+  const result = verifyLicenseCode(code)
+  if (!result.ok) {
+    delete config.license
+    persistConfig()
+    return false
+  }
+
+  licenseInfo = result.payload
+  return true
+}
+
+function createActivationWindow(): BrowserWindow {
+  const win = new BrowserWindow({
+    width: 560,
+    height: 640,
+    show: false,
+    resizable: false,
+    minimizable: true,
+    maximizable: false,
+    title: 'SmartPlanner 激活',
+    backgroundColor: '#f6f7f9',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false
+    }
+  })
+
+  win.setMenuBarVisibility(false)
+
+  win.on('closed', () => {
+    activationWindow = null
+    if (!appStarted && !isQuitting) app.quit()
+  })
+
+  loadRenderer(win, 'activate')
+  win.once('ready-to-show', () => win.show())
+  return win
+}
+
+function showActivationWindow(): void {
+  if (!activationWindow || activationWindow.isDestroyed()) {
+    activationWindow = createActivationWindow()
+    return
+  }
+  if (activationWindow.isMinimized()) activationWindow.restore()
+  activationWindow.show()
+  activationWindow.focus()
+}
+
+function registerLicenseIpc(): void {
+  ipcMain.handle('license:status', () => currentLicenseStatus())
+
+  ipcMain.handle('license:activate', (_event, raw: unknown): ActivationResult => {
+    const code = typeof raw === 'string' ? raw : ''
+    const result = verifyLicenseCode(code)
+    if (!result.ok) {
+      return {
+        ok: false,
+        message: result.message,
+        status: currentLicenseStatus()
+      }
+    }
+
+    config.license = code.trim()
+    persistConfig()
+    licenseInfo = result.payload
+    setImmediate(() => startApp())
+    return {
+      ok: true,
+      message: '激活成功',
+      status: currentLicenseStatus()
+    }
+  })
+
+  ipcMain.on('license:quit', () => {
+    isQuitting = true
+    app.quit()
+  })
+
+  ipcMain.handle('clipboard:write', (_event, text: unknown) => {
+    if (typeof text === 'string') clipboard.writeText(text)
+  })
+}
+
+function startApp(): void {
+  if (appStarted) return
+  appStarted = true
+
+  initStore()
+  ensureDailyBackup()
+  registerIpc()
+  createTray()
+  initUpdater(() => mainWindow)
+  mainWindow = createMainWindow()
+
+  if (activationWindow && !activationWindow.isDestroyed()) {
+    activationWindow.close()
+  }
+  activationWindow = null
+
+  if (currentSettings().autoCheckUpdate) {
+    setTimeout(() => {
+      void checkForUpdates()
+    }, 8000)
+    updateTimer = setInterval(() => {
+      if (currentSettings().autoCheckUpdate) {
+        void checkForUpdates()
+      }
+    }, 6 * 60 * 60 * 1000)
+  }
+
+  try {
+    app.setLoginItemSettings({ openAtLogin: currentSettings().autoLaunch })
+  } catch {
+  }
+
+  const registered = globalShortcut.register(
+    QUICK_CAPTURE_SHORTCUT,
+    toggleQuickCapture
+  )
+  if (!registered) {
+    console.warn(`全局快捷键注册失败: ${QUICK_CAPTURE_SHORTCUT}`)
+  }
+}
+
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 
 if (!gotSingleInstanceLock) {
   app.quit()
 } else {
-  app.on('second-instance', showMainWindow)
+  app.on('second-instance', () => {
+    if (appStarted) showMainWindow()
+    else showActivationWindow()
+  })
 
   app.whenReady().then(() => {
     app.setAppUserModelId(APP_ID)
 
-    initStore()
-    ensureDailyBackup()
-    registerIpc()
-    createTray()
-    initUpdater(() => mainWindow)
-    mainWindow = createMainWindow()
+    initConfig()
+    registerLicenseIpc()
 
-    if (currentSettings().autoCheckUpdate) {
-      setTimeout(() => {
-        void checkForUpdates()
-      }, 8000)
-      updateTimer = setInterval(() => {
-        if (currentSettings().autoCheckUpdate) {
-          void checkForUpdates()
-        }
-      }, 6 * 60 * 60 * 1000)
-    }
-
-    try {
-      app.setLoginItemSettings({ openAtLogin: currentSettings().autoLaunch })
-    } catch {
-      }
-
-    const registered = globalShortcut.register(
-      QUICK_CAPTURE_SHORTCUT,
-      toggleQuickCapture
-    )
-    if (!registered) {
-      console.warn(`全局快捷键注册失败: ${QUICK_CAPTURE_SHORTCUT}`)
+    if (loadStoredLicense()) {
+      startApp()
+    } else {
+      showActivationWindow()
     }
 
     app.on('activate', showMainWindow)

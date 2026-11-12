@@ -26,6 +26,9 @@ export type IconName =
   | 'minimize'
   | 'maximize'
   | 'location'
+  | 'book'
+  | 'flame'
+  | 'copy'
 
 const PATHS: Record<IconName, ReactNode> = {
   sun: (
@@ -132,6 +135,25 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <path d="M12 21s7-5.5 7-11a7 7 0 1 0-14 0c0 5.5 7 11 7 11Z" />
       <circle cx="12" cy="10" r="2.5" />
+    </>
+  ),
+  book: (
+    <>
+      <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5v-15Z" />
+      <path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H20v3H6.5A2.5 2.5 0 0 1 4 18.5" />
+      <path d="M8 7h8M8 10.5h6" />
+    </>
+  ),
+  flame: (
+    <>
+      <path d="M12 3c1.8 3.2 1.2 5.2 3 7 1.3 1.3 2 2.7 2 4.4A5 5 0 0 1 7 15c0-2.1 1.1-3.7 2.6-5.2C11 8.4 12 6.1 12 3Z" />
+      <path d="M12 21c-1.7-1.1-2.6-2.6-2.6-4.3 0-1.4.7-2.6 1.7-3.7.6 1.6 1.3 2.3 2.3 3.1.7.6 1.2 1.4 1.2 2.4 0 1-.9 1.8-2.6 2.5Z" />
+    </>
+  ),
+  copy: (
+    <>
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" />
     </>
   )
 }

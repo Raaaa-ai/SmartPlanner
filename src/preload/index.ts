@@ -1,10 +1,24 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
+  ActivationResult,
   Anniversary,
   AnniversaryInput,
   AnniversaryPatch,
   CaptureItem,
+  Checkin,
+  CheckinInput,
+  CheckinPatch,
+  CheckinRecord,
+  CleanupKind,
+  CleanupResult,
+  Course,
+  CourseInput,
+  CoursePatch,
+  CoursePlan,
+  CoursePlanInput,
+  CoursePlanPatch,
   EdgeSide,
+  LicenseStatus,
   Note,
   NoteInput,
   NotePatch,
@@ -72,6 +86,45 @@ const api: SmartPlannerApi = {
     ipcRenderer.invoke('capture:save', text),
   deleteCapture: (id: string): Promise<void> => ipcRenderer.invoke('capture:delete', id),
   listCaptures: (): Promise<CaptureItem[]> => ipcRenderer.invoke('capture:list'),
+  createCourse: (input: CourseInput): Promise<Course | null> =>
+    ipcRenderer.invoke('course:create', input),
+  updateCourse: (id: string, patch: CoursePatch): Promise<Course | null> =>
+    ipcRenderer.invoke('course:update', id, patch),
+  deleteCourse: (id: string): Promise<void> =>
+    ipcRenderer.invoke('course:delete', id),
+  createCoursePlan: (input: CoursePlanInput): Promise<CoursePlan | null> =>
+    ipcRenderer.invoke('course-plan:create', input),
+  updateCoursePlan: (
+    id: string,
+    patch: CoursePlanPatch
+  ): Promise<CoursePlan | null> =>
+    ipcRenderer.invoke('course-plan:update', id, patch),
+  deleteCoursePlan: (id: string): Promise<void> =>
+    ipcRenderer.invoke('course-plan:delete', id),
+  promoteCoursePlan: (
+    id: string
+  ): Promise<{ course: Course; plan: CoursePlan } | null> =>
+    ipcRenderer.invoke('course-plan:promote', id),
+  createCheckin: (input: CheckinInput): Promise<Checkin | null> =>
+    ipcRenderer.invoke('checkin:create', input),
+  updateCheckin: (id: string, patch: CheckinPatch): Promise<Checkin | null> =>
+    ipcRenderer.invoke('checkin:update', id, patch),
+  deleteCheckin: (id: string): Promise<void> =>
+    ipcRenderer.invoke('checkin:delete', id),
+  toggleCheckin: (
+    checkinId: string,
+    date: string
+  ): Promise<{ checked: boolean; record: CheckinRecord | null } | null> =>
+    ipcRenderer.invoke('checkin:toggle', checkinId, date),
+  cleanupData: (kind: CleanupKind): Promise<CleanupResult> =>
+    ipcRenderer.invoke('data:cleanup', kind),
+  getLicenseStatus: (): Promise<LicenseStatus> =>
+    ipcRenderer.invoke('license:status'),
+  activateLicense: (code: string): Promise<ActivationResult> =>
+    ipcRenderer.invoke('license:activate', code),
+  quitApp: (): void => ipcRenderer.send('license:quit'),
+  copyText: (text: string): Promise<void> =>
+    ipcRenderer.invoke('clipboard:write', text),
   updateSettings: (patch: SettingsPatch): Promise<Settings> =>
     ipcRenderer.invoke('settings:update', patch),
   chooseDataDir: (): Promise<Snapshot | null> => ipcRenderer.invoke('settings:chooseDataDir'),

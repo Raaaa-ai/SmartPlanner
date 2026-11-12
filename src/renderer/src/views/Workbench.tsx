@@ -5,6 +5,8 @@ import { NAV, NAV_GROUPS, type ModuleKey } from '../lib/nav'
 import { useWorkspace } from '../state/WorkspaceContext'
 import { AnniversariesView } from './AnniversariesView'
 import { CalendarView } from './CalendarView'
+import { CheckinView } from './CheckinView'
+import { CoursesView } from './CoursesView'
 import { NotesView } from './NotesView'
 import { ProjectsView } from './ProjectsView'
 import { RecordCardsView } from './RecordCardsView'
@@ -18,6 +20,8 @@ const SUBTITLES: Record<ModuleKey, string> = {
   tasks: '今天、一周内与未来的待办安排',
   projects: '长期项目的整体进度与每日进展',
   calendar: '当月每天的工作记录一览',
+  courses: '本周课表与选课计划',
+  checkin: '为目标坚持打卡，看看这个月的进度',
   records: '记录获奖、里程碑与值得纪念的事',
   anniversary: '记住重要的日子，看看还有多少天',
   reflection: '每天写一点，留下当时的想法',
@@ -30,6 +34,8 @@ function ModuleContent({ active }: { active: ModuleKey }): React.JSX.Element {
   if (active === 'tasks') return <TasksView />
   if (active === 'projects') return <ProjectsView />
   if (active === 'calendar') return <CalendarView />
+  if (active === 'courses') return <CoursesView />
+  if (active === 'checkin') return <CheckinView />
   if (active === 'records') return <RecordCardsView />
   if (active === 'anniversary') return <AnniversariesView />
   if (active === 'reflection') return <ReflectionsView />

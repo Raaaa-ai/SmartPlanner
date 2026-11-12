@@ -28,7 +28,7 @@ const EMPTY_COPY: Record<Filter, { title: string; hint: string }> = {
 }
 
 export function TasksView(): React.JSX.Element {
-  const { tasks } = useWorkspace()
+  const { tasks, cleanupData } = useWorkspace()
   const [filter, setFilter] = useState<Filter>('today')
   const [creating, setCreating] = useState(false)
 
@@ -36,6 +36,19 @@ export function TasksView(): React.JSX.Element {
   const weekEnd = addDaysISO(today, 7)
   const openTasks = tasks.filter((task) => !task.done)
   const doneTasks = sortDoneTasks(tasks.filter((task) => task.done))
+
+  async function clearCompleted(): Promise<void> {
+    if (doneTasks.length === 0) return
+    if (
+      !window.confirm(
+        `确定删除全部 ${doneTasks.length} 条已完成的待办吗？删除后不可恢复。`
+      )
+    ) {
+      return
+    }
+    const removed = await cleanupData('completedTasks')
+    window.alert(`已删除 ${removed} 条已完成的待办。`)
+  }
 
   const groups: Record<'today' | 'week' | 'future', typeof tasks> = {
     today: sortOpenTasks(
@@ -85,10 +98,21 @@ export function TasksView(): React.JSX.Element {
             已完成 {doneTasks.length}
           </button>
         </div>
-        <button className="primary-button" onClick={() => setCreating(true)}>
-          <Icon name="plus" size={16} />
-          新建待办 / 计划
-        </button>
+        <div className="toolbar-actions">
+          {filter === 'done' && doneTasks.length > 0 && (
+            <button
+              className="ghost-button danger-text"
+              onClick={() => void clearCompleted()}
+            >
+              <Icon name="trash" size={15} />
+              清空已完成
+            </button>
+          )}
+          <button className="primary-button" onClick={() => setCreating(true)}>
+            <Icon name="plus" size={16} />
+            新建待办 / 计划
+          </button>
+        </div>
       </div>
 
       {visible.length === 0 ? (

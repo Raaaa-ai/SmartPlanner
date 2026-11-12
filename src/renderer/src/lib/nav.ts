@@ -5,6 +5,8 @@ export type ModuleKey =
   | 'tasks'
   | 'projects'
   | 'calendar'
+  | 'courses'
+  | 'checkin'
   | 'records'
   | 'anniversary'
   | 'reflection'
@@ -16,6 +18,8 @@ export const NAV: { key: ModuleKey; label: string; icon: IconName }[] = [
   { key: 'tasks', label: '待办', icon: 'tasks' },
   { key: 'projects', label: '项目', icon: 'folder' },
   { key: 'calendar', label: '月历', icon: 'calendar' },
+  { key: 'courses', label: '课程表', icon: 'book' },
+  { key: 'checkin', label: '打卡', icon: 'flame' },
   { key: 'records', label: '记录卡', icon: 'award' },
   { key: 'anniversary', label: '纪念日', icon: 'gift' },
   { key: 'reflection', label: '每日感想', icon: 'pen' },
@@ -25,6 +29,7 @@ export const NAV: { key: ModuleKey; label: string; icon: IconName }[] = [
 
 export const NAV_GROUPS: { label: string; keys: ModuleKey[] }[] = [
   { label: '工作台', keys: ['today', 'tasks', 'projects', 'calendar'] },
+  { label: '学习', keys: ['courses', 'checkin'] },
   { label: '记录', keys: ['records', 'anniversary', 'reflection', 'notes'] },
   { label: '系统', keys: ['settings'] }
 ]

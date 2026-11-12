@@ -15,6 +15,19 @@ export type EdgeSide = 'left' | 'right'
 
 export type AnniversaryRepeat = 'yearly' | 'once'
 
+export type Weekday = 1 | 2 | 3 | 4 | 5 | 6 | 7
+
+export type CoursePlanStatus = 'considering' | 'selected' | 'dropped'
+
+export type CourseSemester = 'fall' | 'spring'
+
+export type CheckinPeriod = 'week' | 'month' | 'year'
+
+export type CleanupKind =
+  | 'completedTasks'
+  | 'pastReflections'
+  | 'expiredAnniversaries'
+
 export interface Project {
   id: string
   name: string
@@ -162,6 +175,115 @@ export interface CaptureItem {
   createdAt: number
 }
 
+export interface Course {
+  id: string
+  name: string
+  teacher: string
+  location: string
+  weekday: Weekday
+  startTime: string
+  endTime: string
+  weeks: string
+  color: string
+  note: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface CourseInput {
+  name: string
+  teacher?: string
+  location?: string
+  weekday?: Weekday
+  startTime?: string
+  endTime?: string
+  weeks?: string
+  color?: string
+  note?: string
+}
+
+export type CoursePatch = Partial<CourseInput>
+
+export interface CoursePlan {
+  id: string
+  name: string
+  teacher: string
+  location: string
+  weekday: Weekday
+  startTime: string
+  endTime: string
+  weeks: string
+  semester: CourseSemester
+  status: CoursePlanStatus
+  note: string
+  color: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface CoursePlanInput {
+  name: string
+  teacher?: string
+  location?: string
+  weekday?: Weekday
+  startTime?: string
+  endTime?: string
+  weeks?: string
+  semester?: CourseSemester
+  status?: CoursePlanStatus
+  note?: string
+  color?: string
+}
+
+export type CoursePlanPatch = Partial<CoursePlanInput>
+
+export interface Checkin {
+  id: string
+  name: string
+  color: string
+  targetDays: number
+  period: CheckinPeriod
+  note: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface CheckinInput {
+  name: string
+  color?: string
+  targetDays?: number
+  period?: CheckinPeriod
+  note?: string
+}
+
+export type CheckinPatch = Partial<CheckinInput>
+
+export interface CheckinRecord {
+  id: string
+  checkinId: string
+  date: string
+  createdAt: number
+}
+
+export interface CleanupResult {
+  removed: number
+  snapshot: Snapshot
+}
+
+export interface LicenseStatus {
+  activated: boolean
+  machineCode: string
+  label?: string
+  issuedAt?: number
+  version?: string
+}
+
+export interface ActivationResult {
+  ok: boolean
+  message: string
+  status: LicenseStatus
+}
+
 export interface Settings {
   accent: string
   autoLaunch: boolean
@@ -224,7 +346,12 @@ export interface Snapshot {
   reflections: Reflection[]
   notes: Note[]
   captures: CaptureItem[]
+  courses: Course[]
+  coursePlans: CoursePlan[]
+  checkins: Checkin[]
+  checkinRecords: CheckinRecord[]
   settings: Settings
+  license: LicenseStatus
   version: string
 }
 
@@ -258,6 +385,30 @@ export interface SmartPlannerApi {
   saveCapture: (text: string) => Promise<CaptureItem | null>
   deleteCapture: (id: string) => Promise<void>
   listCaptures: () => Promise<CaptureItem[]>
+  createCourse: (input: CourseInput) => Promise<Course | null>
+  updateCourse: (id: string, patch: CoursePatch) => Promise<Course | null>
+  deleteCourse: (id: string) => Promise<void>
+  createCoursePlan: (input: CoursePlanInput) => Promise<CoursePlan | null>
+  updateCoursePlan: (
+    id: string,
+    patch: CoursePlanPatch
+  ) => Promise<CoursePlan | null>
+  deleteCoursePlan: (id: string) => Promise<void>
+  promoteCoursePlan: (
+    id: string
+  ) => Promise<{ course: Course; plan: CoursePlan } | null>
+  createCheckin: (input: CheckinInput) => Promise<Checkin | null>
+  updateCheckin: (id: string, patch: CheckinPatch) => Promise<Checkin | null>
+  deleteCheckin: (id: string) => Promise<void>
+  toggleCheckin: (
+    checkinId: string,
+    date: string
+  ) => Promise<{ checked: boolean; record: CheckinRecord | null } | null>
+  cleanupData: (kind: CleanupKind) => Promise<CleanupResult>
+  getLicenseStatus: () => Promise<LicenseStatus>
+  activateLicense: (code: string) => Promise<ActivationResult>
+  quitApp: () => void
+  copyText: (text: string) => Promise<void>
   updateSettings: (patch: SettingsPatch) => Promise<Settings>
   chooseDataDir: () => Promise<Snapshot | null>
   useDefaultDataDir: () => Promise<Snapshot | null>

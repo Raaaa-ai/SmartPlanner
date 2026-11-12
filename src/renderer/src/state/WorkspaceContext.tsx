@@ -11,6 +11,17 @@ import type {
   Anniversary,
   AnniversaryInput,
   AnniversaryPatch,
+  Checkin,
+  CheckinInput,
+  CheckinPatch,
+  CheckinRecord,
+  CleanupKind,
+  Course,
+  CourseInput,
+  CoursePatch,
+  CoursePlan,
+  CoursePlanInput,
+  CoursePlanPatch,
   EdgeSide,
   Note,
   NoteInput,
@@ -33,6 +44,23 @@ import type {
   UpdateStatus
 } from '../../../shared/types'
 import { applyAccent } from '../lib/theme'
+
+function sortCourses(courses: Course[]): Course[] {
+  return [...courses].sort(
+    (a, b) =>
+      a.weekday - b.weekday ||
+      a.startTime.localeCompare(b.startTime) ||
+      a.createdAt - b.createdAt
+  )
+}
+
+function sortCoursePlans(plans: CoursePlan[]): CoursePlan[] {
+  return [...plans].sort((a, b) => b.createdAt - a.createdAt)
+}
+
+function sortCheckins(checkins: Checkin[]): Checkin[] {
+  return [...checkins].sort((a, b) => a.createdAt - b.createdAt)
+}
 
 interface WorkspaceValue extends Snapshot {
   createProject: (input: ProjectInput) => Promise<Project | null>
@@ -61,6 +89,26 @@ interface WorkspaceValue extends Snapshot {
   updateNote: (id: string, patch: NotePatch) => Promise<Note | null>
   deleteNote: (id: string) => Promise<void>
   deleteCapture: (id: string) => Promise<void>
+  createCourse: (input: CourseInput) => Promise<Course | null>
+  updateCourse: (id: string, patch: CoursePatch) => Promise<Course | null>
+  deleteCourse: (id: string) => Promise<void>
+  createCoursePlan: (input: CoursePlanInput) => Promise<CoursePlan | null>
+  updateCoursePlan: (
+    id: string,
+    patch: CoursePlanPatch
+  ) => Promise<CoursePlan | null>
+  deleteCoursePlan: (id: string) => Promise<void>
+  promoteCoursePlan: (
+    id: string
+  ) => Promise<{ course: Course; plan: CoursePlan } | null>
+  createCheckin: (input: CheckinInput) => Promise<Checkin | null>
+  updateCheckin: (id: string, patch: CheckinPatch) => Promise<Checkin | null>
+  deleteCheckin: (id: string) => Promise<void>
+  toggleCheckin: (
+    checkinId: string,
+    date: string
+  ) => Promise<{ checked: boolean; record: CheckinRecord | null } | null>
+  cleanupData: (kind: CleanupKind) => Promise<number>
   updateSettings: (patch: SettingsPatch) => Promise<Settings>
   chooseDataDir: () => Promise<boolean>
   useDefaultDataDir: () => Promise<boolean>
@@ -385,6 +433,191 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
     )
   }, [])
 
+  const createCourse = useCallback(async (input: CourseInput) => {
+    const course = await window.api.createCourse(input)
+    if (course) {
+      setSnapshot((prev) =>
+        prev ? { ...prev, courses: sortCourses([...prev.courses, course]) } : prev
+      )
+    }
+    return course
+  }, [])
+
+  const updateCourse = useCallback(async (id: string, patch: CoursePatch) => {
+    const course = await window.api.updateCourse(id, patch)
+    if (course) {
+      setSnapshot((prev) =>
+        prev
+          ? {
+              ...prev,
+              courses: sortCourses(
+                prev.courses.map((item) => (item.id === course.id ? course : item))
+              )
+            }
+          : prev
+      )
+    }
+    return course
+  }, [])
+
+  const deleteCourse = useCallback(async (id: string) => {
+    await window.api.deleteCourse(id)
+    setSnapshot((prev) =>
+      prev
+        ? { ...prev, courses: prev.courses.filter((item) => item.id !== id) }
+        : prev
+    )
+  }, [])
+
+  const createCoursePlan = useCallback(async (input: CoursePlanInput) => {
+    const plan = await window.api.createCoursePlan(input)
+    if (plan) {
+      setSnapshot((prev) =>
+        prev
+          ? { ...prev, coursePlans: sortCoursePlans([plan, ...prev.coursePlans]) }
+          : prev
+      )
+    }
+    return plan
+  }, [])
+
+  const updateCoursePlan = useCallback(
+    async (id: string, patch: CoursePlanPatch) => {
+      const plan = await window.api.updateCoursePlan(id, patch)
+      if (plan) {
+        setSnapshot((prev) =>
+          prev
+            ? {
+                ...prev,
+                coursePlans: sortCoursePlans(
+                  prev.coursePlans.map((item) =>
+                    item.id === plan.id ? plan : item
+                  )
+                )
+              }
+            : prev
+        )
+      }
+      return plan
+    },
+    []
+  )
+
+  const deleteCoursePlan = useCallback(async (id: string) => {
+    await window.api.deleteCoursePlan(id)
+    setSnapshot((prev) =>
+      prev
+        ? {
+            ...prev,
+            coursePlans: prev.coursePlans.filter((item) => item.id !== id)
+          }
+        : prev
+    )
+  }, [])
+
+  const promoteCoursePlan = useCallback(async (id: string) => {
+    const result = await window.api.promoteCoursePlan(id)
+    if (result) {
+      setSnapshot((prev) =>
+        prev
+          ? {
+              ...prev,
+              courses: sortCourses([
+                ...prev.courses.filter(
+                  (item) => item.id !== result.course.id
+                ),
+                result.course
+              ]),
+              coursePlans: sortCoursePlans(
+                prev.coursePlans.map((item) =>
+                  item.id === result.plan.id ? result.plan : item
+                )
+              )
+            }
+          : prev
+      )
+    }
+    return result
+  }, [])
+
+  const createCheckin = useCallback(async (input: CheckinInput) => {
+    const checkin = await window.api.createCheckin(input)
+    if (checkin) {
+      setSnapshot((prev) =>
+        prev
+          ? { ...prev, checkins: sortCheckins([...prev.checkins, checkin]) }
+          : prev
+      )
+    }
+    return checkin
+  }, [])
+
+  const updateCheckin = useCallback(async (id: string, patch: CheckinPatch) => {
+    const checkin = await window.api.updateCheckin(id, patch)
+    if (checkin) {
+      setSnapshot((prev) =>
+        prev
+          ? {
+              ...prev,
+              checkins: sortCheckins(
+                prev.checkins.map((item) =>
+                  item.id === checkin.id ? checkin : item
+                )
+              )
+            }
+          : prev
+      )
+    }
+    return checkin
+  }, [])
+
+  const deleteCheckin = useCallback(async (id: string) => {
+    await window.api.deleteCheckin(id)
+    setSnapshot((prev) =>
+      prev
+        ? {
+            ...prev,
+            checkins: prev.checkins.filter((item) => item.id !== id),
+            checkinRecords: prev.checkinRecords.filter(
+              (record) => record.checkinId !== id
+            )
+          }
+        : prev
+    )
+  }, [])
+
+  const toggleCheckin = useCallback(async (checkinId: string, date: string) => {
+    const result = await window.api.toggleCheckin(checkinId, date)
+    if (result) {
+      setSnapshot((prev) => {
+        if (!prev) return prev
+        const records = result.record
+          ? [
+              ...prev.checkinRecords.filter(
+                (record) =>
+                  !(
+                    record.checkinId === checkinId &&
+                    record.date === result.record!.date
+                  )
+              ),
+              result.record
+            ]
+          : prev.checkinRecords.filter(
+              (record) =>
+                !(record.checkinId === checkinId && record.date === date)
+            )
+        return { ...prev, checkinRecords: records }
+      })
+    }
+    return result
+  }, [])
+
+  const cleanupData = useCallback(async (kind: CleanupKind) => {
+    const result = await window.api.cleanupData(kind)
+    setSnapshot(result.snapshot)
+    return result.removed
+  }, [])
+
   const updateSettings = useCallback(async (patch: SettingsPatch) => {
     const settings = await window.api.updateSettings(patch)
     setSnapshot((prev) => (prev ? { ...prev, settings } : prev))
@@ -445,6 +678,18 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
       updateNote,
       deleteNote,
       deleteCapture,
+      createCourse,
+      updateCourse,
+      deleteCourse,
+      createCoursePlan,
+      updateCoursePlan,
+      deleteCoursePlan,
+      promoteCoursePlan,
+      createCheckin,
+      updateCheckin,
+      deleteCheckin,
+      toggleCheckin,
+      cleanupData,
       updateSettings,
       chooseDataDir,
       useDefaultDataDir,
@@ -478,6 +723,18 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
     updateNote,
     deleteNote,
     deleteCapture,
+    createCourse,
+    updateCourse,
+    deleteCourse,
+    createCoursePlan,
+    updateCoursePlan,
+    deleteCoursePlan,
+    promoteCoursePlan,
+    createCheckin,
+    updateCheckin,
+    deleteCheckin,
+    toggleCheckin,
+    cleanupData,
     updateSettings,
     chooseDataDir,
     useDefaultDataDir,

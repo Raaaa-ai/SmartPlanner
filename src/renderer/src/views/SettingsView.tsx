@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react'
-import type { CloseAction, WindowCorner } from '../../../shared/types'
+import type {
+  CleanupKind,
+  CloseAction,
+  WindowCorner
+} from '../../../shared/types'
 import { Icon } from '../components/Icon'
+import { todayISO } from '../lib/date'
 import { useWorkspace } from '../state/WorkspaceContext'
 
 const ACCENTS = [
@@ -51,16 +56,45 @@ export function SettingsView(): React.JSX.Element {
   const {
     settings,
     version,
+    license,
+    tasks,
+    reflections,
+    anniversaries,
     updateStatus,
     updateSettings,
     chooseDataDir,
     useDefaultDataDir,
     checkForUpdates,
-    installUpdate
+    installUpdate,
+    cleanupData
   } = useWorkspace()
   const [bgOpacity, setBgOpacity] = useState(settings.backgroundOpacity)
   const [switching, setSwitching] = useState(false)
   const [checking, setChecking] = useState(false)
+
+  const completedTaskCount = tasks.filter((task) => task.done).length
+  const pastReflectionCount = reflections.filter(
+    (item) => item.date < todayISO()
+  ).length
+  const expiredAnniversaryCount = anniversaries.filter(
+    (item) => item.repeat === 'once' && item.date < todayISO()
+  ).length
+
+  async function handleCleanup(
+    kind: CleanupKind,
+    label: string,
+    count: number
+  ): Promise<void> {
+    if (count === 0) {
+      window.alert(`${label}：没有需要清理的数据。`)
+      return
+    }
+    if (!window.confirm(`确定删除${label}的 ${count} 条数据吗？删除后不可恢复。`)) {
+      return
+    }
+    const removed = await cleanupData(kind)
+    window.alert(`已清理 ${removed} 条${label}。`)
+  }
 
   useEffect(() => {
     setBgOpacity(settings.backgroundOpacity)
@@ -392,6 +426,85 @@ export function SettingsView(): React.JSX.Element {
 
       <section className="card panel">
         <div className="panel-head">
+          <h3>数据清理</h3>
+          <span className="muted">删除后不可恢复</span>
+        </div>
+
+        <div className="settings-row">
+          <div className="settings-info">
+            <strong>已完成的待办</strong>
+            <span>删除所有勾选完成的待办，只保留未完成的事项。</span>
+          </div>
+          <div className="settings-control">
+            <span className="muted">{completedTaskCount} 条</span>
+            <button
+              className="ghost-button danger-text"
+              disabled={completedTaskCount === 0}
+              onClick={() =>
+                void handleCleanup(
+                  'completedTasks',
+                  '已完成的待办',
+                  completedTaskCount
+                )
+              }
+            >
+              <Icon name="trash" size={15} />
+              一键删除
+            </button>
+          </div>
+        </div>
+
+        <div className="settings-row">
+          <div className="settings-info">
+            <strong>历史每日感悟</strong>
+            <span>删除今天之前的每日感悟，今天及以后的内容会保留。</span>
+          </div>
+          <div className="settings-control">
+            <span className="muted">{pastReflectionCount} 篇</span>
+            <button
+              className="ghost-button danger-text"
+              disabled={pastReflectionCount === 0}
+              onClick={() =>
+                void handleCleanup(
+                  'pastReflections',
+                  '历史每日感悟',
+                  pastReflectionCount
+                )
+              }
+            >
+              <Icon name="trash" size={15} />
+              一键删除
+            </button>
+          </div>
+        </div>
+
+        <div className="settings-row">
+          <div className="settings-info">
+            <strong>已过期的一次性纪念日</strong>
+            <span>删除日期已经过去、且不重复的纪念日。</span>
+          </div>
+          <div className="settings-control">
+            <span className="muted">{expiredAnniversaryCount} 个</span>
+            <button
+              className="ghost-button danger-text"
+              disabled={expiredAnniversaryCount === 0}
+              onClick={() =>
+                void handleCleanup(
+                  'expiredAnniversaries',
+                  '已过期的一次性纪念日',
+                  expiredAnniversaryCount
+                )
+              }
+            >
+              <Icon name="trash" size={15} />
+              一键删除
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="card panel">
+        <div className="panel-head">
           <h3>启动与快捷键</h3>
         </div>
 
@@ -466,6 +579,47 @@ export function SettingsView(): React.JSX.Element {
               </button>
             )}
           </div>
+        </div>
+      </section>
+
+      <section className="card panel">
+        <div className="panel-head">
+          <h3>授权</h3>
+          <span className={license.activated ? 'license-badge' : 'muted'}>
+            {license.activated ? '已激活 · 永久有效' : '未激活'}
+          </span>
+        </div>
+
+        <div className="settings-row">
+          <div className="settings-info">
+            <strong>本机机器码</strong>
+            <span>
+              激活码只对当前电脑有效；重装系统或更换硬件后机器码会变化，需要重新签发。
+            </span>
+          </div>
+          <div className="settings-control">
+            <code className="machine-code small">{license.machineCode}</code>
+            <button
+              className="ghost-button"
+              onClick={() => void window.api.copyText(license.machineCode)}
+            >
+              <Icon name="copy" size={15} />
+              复制
+            </button>
+          </div>
+        </div>
+
+        <div className="settings-row">
+          <div className="settings-info">
+            <strong>授权信息</strong>
+            <span>
+              {license.label ? `授权给 ${license.label}` : '永久授权'}
+              {license.issuedAt
+                ? ` · 签发于 ${new Date(license.issuedAt).toLocaleDateString('zh-CN')}`
+                : ''}
+            </span>
+          </div>
+          <span className="license-badge">永久有效</span>
         </div>
       </section>
 

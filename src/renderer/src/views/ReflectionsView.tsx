@@ -17,7 +17,7 @@ function shiftDate(iso: string, delta: number): string {
 }
 
 export function ReflectionsView(): React.JSX.Element {
-  const { reflections, saveReflection } = useWorkspace()
+  const { reflections, saveReflection, cleanupData } = useWorkspace()
   const [date, setDate] = useState(todayISO())
   const [content, setContent] = useState('')
   const [mood, setMood] = useState('')
@@ -64,6 +64,25 @@ export function ReflectionsView(): React.JSX.Element {
   }
 
   const recent = [...reflections].sort((a, b) => b.date.localeCompare(a.date))
+  const pastCount = reflections.filter((item) => item.date < todayISO()).length
+
+  async function clearHistory(): Promise<void> {
+    if (pastCount === 0) return
+    if (
+      !window.confirm(
+        `确定删除今天之前的 ${pastCount} 篇每日感悟吗？删除后不可恢复。`
+      )
+    ) {
+      return
+    }
+    const removed = await cleanupData('pastReflections')
+    if (date < todayISO()) {
+      setContent('')
+      setMood('')
+      setStatus('idle')
+    }
+    window.alert(`已删除 ${removed} 篇历史每日感悟。`)
+  }
 
   return (
     <div className="reflection-layout">
@@ -135,7 +154,18 @@ export function ReflectionsView(): React.JSX.Element {
       <aside className="card panel reflection-list">
         <div className="panel-head">
           <h3>近期感想</h3>
-          <span className="muted">{reflections.length} 篇</span>
+          <div className="panel-head-actions">
+            <span className="muted">{reflections.length} 篇</span>
+            {pastCount > 0 && (
+              <button
+                className="ghost-button danger-text"
+                onClick={() => void clearHistory()}
+              >
+                <Icon name="trash" size={14} />
+                清理历史
+              </button>
+            )}
+          </div>
         </div>
 
         {recent.length === 0 ? (
