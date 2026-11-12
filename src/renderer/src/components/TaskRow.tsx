@@ -36,12 +36,6 @@ export function TaskRow({
         <div className="task-main">
           <div className="task-title">{task.title}</div>
           <div className="task-meta">
-            {project && !hideProject && (
-              <span className="task-project">
-                <span className="task-color" style={{ background: project.color }} />
-                {project.name}
-              </span>
-            )}
             <span className={overdue ? 'task-due overdue' : 'task-due'}>
               <Icon name="calendar" size={13} />
               {dueText(task, today)}
@@ -52,8 +46,32 @@ export function TaskRow({
                 {task.location}
               </span>
             )}
-            <span className={`priority-badge priority-${task.priority}`}>
-              {PRIORITY_LABEL[task.priority]}
+            {task.note.trim() && (
+              <span className="task-extra" title={task.note}>
+                <Icon name="note" size={13} />
+                {task.note.trim()}
+              </span>
+            )}
+            <span className="task-tags">
+              <span className={`priority-badge priority-${task.priority}`}>
+                {PRIORITY_LABEL[task.priority]}
+              </span>
+              {project && !hideProject && (
+                <span
+                  className="task-project"
+                  style={{
+                    color: project.color,
+                    background: `${project.color}14`,
+                    borderColor: `${project.color}40`
+                  }}
+                >
+                  <span
+                    className="task-color"
+                    style={{ background: project.color }}
+                  />
+                  {project.name}
+                </span>
+              )}
             </span>
           </div>
         </div>

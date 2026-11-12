@@ -6,13 +6,22 @@ files:
   - out/**/*
   - resources/**/*
   - package.json
+publish:
+  provider: github
+  owner: Raaaa-ai
+  repo: SmartPlanner
+  releaseType: release
 win:
   target:
     - nsis
   icon: build/icon.ico
+  artifactName: ${productName}-Setup-${version}.${ext}
 nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
+  packElevateHelper: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
+  shortcutName: SmartPlanner
+  uninstallDisplayName: SmartPlanner

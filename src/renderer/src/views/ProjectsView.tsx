@@ -36,17 +36,68 @@ function ProjectCard({
   project,
   entries,
   planCount,
-  onOpen
+  onOpen,
+  sorting = false,
+  canUp = false,
+  canDown = false,
+  onMoveUp,
+  onMoveDown
 }: {
   project: Project
   entries: ProgressEntry[]
   planCount: number
   onOpen: () => void
+  sorting?: boolean
+  canUp?: boolean
+  canDown?: boolean
+  onMoveUp?: () => void
+  onMoveDown?: () => void
 }): React.JSX.Element {
   const percent = entries[0]?.percent ?? 0
 
   return (
-    <button className="project-card card" onClick={onOpen}>
+    <div
+      className={sorting ? 'project-card card sorting' : 'project-card card'}
+      role="button"
+      tabIndex={0}
+      onClick={() => {
+        if (!sorting) onOpen()
+      }}
+      onKeyDown={(event) => {
+        if (!sorting && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault()
+          onOpen()
+        }
+      }}
+    >
+      {sorting && (
+        <div className="project-sort-actions">
+          <button
+            type="button"
+            className="icon-button tiny"
+            disabled={!canUp}
+            title="上移"
+            onClick={(event) => {
+              event.stopPropagation()
+              onMoveUp?.()
+            }}
+          >
+            <Icon name="chevron-left" size={14} className="rotate-up" />
+          </button>
+          <button
+            type="button"
+            className="icon-button tiny"
+            disabled={!canDown}
+            title="下移"
+            onClick={(event) => {
+              event.stopPropagation()
+              onMoveDown?.()
+            }}
+          >
+            <Icon name="chevron-right" size={14} className="rotate-down" />
+          </button>
+        </div>
+      )}
       <div className="project-top">
         <span className="project-color" style={{ background: project.color }} />
         <span className="project-name">{project.name}</span>
@@ -86,7 +137,7 @@ function ProjectCard({
           {planCount} 项计划
         </span>
       </div>
-    </button>
+    </div>
   )
 }
 
@@ -482,11 +533,21 @@ function ProjectDetail({
 }
 
 export function ProjectsView(): React.JSX.Element {
-  const { projects, progress, tasks } = useWorkspace()
+  const { projects, progress, tasks, reorderProjects } = useWorkspace()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [modal, setModal] = useState<{ project?: Project } | null>(null)
+  const [sorting, setSorting] = useState(false)
 
   const selected = projects.find((project) => project.id === selectedId) ?? null
+
+  async function moveProject(index: number, delta: number): Promise<void> {
+    const target = index + delta
+    if (target < 0 || target >= projects.length) return
+    const next = [...projects]
+    const [moved] = next.splice(index, 1)
+    next.splice(target, 0, moved)
+    await reorderProjects(next.map((project) => project.id))
+  }
 
   return (
     <>
@@ -499,11 +560,23 @@ export function ProjectsView(): React.JSX.Element {
       ) : (
         <>
           <div className="view-toolbar">
-            <span className="muted">共 {projects.length} 个项目</span>
-            <button className="primary-button" onClick={() => setModal({})}>
-              <Icon name="plus" size={16} />
-              新建项目
-            </button>
+            <span className="muted">
+              {sorting ? '使用上下箭头调整项目顺序' : `共 ${projects.length} 个项目`}
+            </span>
+            <div className="toolbar-actions">
+              {projects.length > 1 && (
+                <button
+                  className="ghost-button"
+                  onClick={() => setSorting((value) => !value)}
+                >
+                  {sorting ? '完成排序' : '手动排序'}
+                </button>
+              )}
+              <button className="primary-button" onClick={() => setModal({})}>
+                <Icon name="plus" size={16} />
+                新建项目
+              </button>
+            </div>
           </div>
 
           {projects.length === 0 ? (
@@ -522,13 +595,18 @@ export function ProjectsView(): React.JSX.Element {
             </div>
           ) : (
             <div className="projects-grid">
-              {projects.map((project) => (
+              {projects.map((project, index) => (
                 <ProjectCard
                   key={project.id}
                   project={project}
                   entries={entriesOf(project.id, progress)}
                   planCount={tasks.filter((task) => task.projectId === project.id).length}
                   onOpen={() => setSelectedId(project.id)}
+                  sorting={sorting}
+                  canUp={index > 0}
+                  canDown={index < projects.length - 1}
+                  onMoveUp={() => void moveProject(index, -1)}
+                  onMoveDown={() => void moveProject(index, 1)}
                 />
               ))}
             </div>

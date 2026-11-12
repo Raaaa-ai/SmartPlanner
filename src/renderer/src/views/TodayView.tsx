@@ -2,7 +2,9 @@ import { useState } from 'react'
 import { Icon, type IconName } from '../components/Icon'
 import { TaskModal } from '../components/TaskModal'
 import { TaskRow } from '../components/TaskRow'
+import { countdownFor, sortByCountdown } from '../lib/anniversaries'
 import {
+  formatDayDate,
   formatFullDate,
   formatTime,
   todayISO,
@@ -20,8 +22,17 @@ function greeting(): string {
 }
 
 export function TodayView(): React.JSX.Element {
-  const { projects, progress, tasks, captures, createTask } = useWorkspace()
+  const {
+    projects,
+    progress,
+    tasks,
+    captures,
+    anniversaries,
+    createTask,
+    deleteCapture
+  } = useWorkspace()
   const today = todayISO()
+  const upcomingAnniversaries = sortByCountdown(anniversaries, today).slice(0, 3)
 
   const todaysTasks = todayTasks(tasks, today)
   const tomorrowsTasks = tomorrowTasks(tasks)
@@ -197,6 +208,7 @@ export function TodayView(): React.JSX.Element {
           </section>
         </div>
 
+        <div className="stack">
         <section className="card panel">
           <div className="panel-head">
             <h3>最近速记</h3>
@@ -221,11 +233,61 @@ export function TodayView(): React.JSX.Element {
                     <div className="feed-text">{item.text}</div>
                   </div>
                   <span className="feed-time">{formatTime(item.createdAt)}</span>
+                  <button
+                    className="icon-button tiny"
+                    title="删除速记"
+                    onClick={() => {
+                      if (!window.confirm('确定删除这条速记吗？')) return
+                      void deleteCapture(item.id)
+                    }}
+                  >
+                    <Icon name="trash" size={13} />
+                  </button>
                 </li>
               ))}
             </ul>
           )}
         </section>
+
+        <section className="card panel">
+          <div className="panel-head">
+            <h3>即将到来的纪念日</h3>
+            <span className="muted">{anniversaries.length} 个</span>
+          </div>
+          {upcomingAnniversaries.length === 0 ? (
+            <div className="empty-state compact">
+              <span className="empty-icon">
+                <Icon name="gift" size={22} />
+              </span>
+              <div>
+                <strong>还没有纪念日</strong>
+                <p>去「纪念日」记下重要的日子，这里会显示最近的倒数。</p>
+              </div>
+            </div>
+          ) : (
+            <ul className="feed">
+              {upcomingAnniversaries.map((item) => {
+                const countdown = countdownFor(item, today)
+                return (
+                  <li key={item.id} className="feed-item">
+                    <span
+                      className="feed-dot"
+                      style={{ background: item.color }}
+                    />
+                    <div className="feed-body">
+                      <div className="feed-title">{item.title}</div>
+                      <div className="feed-text">
+                        {formatDayDate(item.date)}
+                      </div>
+                    </div>
+                    <span className="percent-badge">{countdown.label}</span>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </section>
+        </div>
       </div>
 
       {tomorrowModal && (

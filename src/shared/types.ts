@@ -11,6 +11,10 @@ export type WindowAction = 'minimize' | 'toggle-maximize' | 'close'
 
 export type CloseAction = 'ask' | 'tray' | 'quit'
 
+export type EdgeSide = 'left' | 'right'
+
+export type AnniversaryRepeat = 'yearly' | 'once'
+
 export interface Project {
   id: string
   name: string
@@ -19,6 +23,7 @@ export interface Project {
   status: ProjectStatus
   startDate: string
   targetDate: string
+  sortOrder: number
   createdAt: number
   updatedAt: number
 }
@@ -99,6 +104,27 @@ export interface RecordCardInput {
 
 export type RecordCardPatch = Partial<RecordCardInput>
 
+export interface Anniversary {
+  id: string
+  title: string
+  date: string
+  repeat: AnniversaryRepeat
+  note: string
+  color: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface AnniversaryInput {
+  title: string
+  date: string
+  repeat?: AnniversaryRepeat
+  note?: string
+  color?: string
+}
+
+export type AnniversaryPatch = Partial<AnniversaryInput>
+
 export interface Reflection {
   id: string
   date: string
@@ -146,6 +172,10 @@ export interface Settings {
   alwaysOnTop: boolean
   fixedPosition: boolean
   windowCorner: WindowCorner
+  sidebarCollapsed: boolean
+  edgeAutoHide: boolean
+  edgeSide: EdgeSide
+  autoCheckUpdate: boolean
   dataDir: string
 }
 
@@ -161,24 +191,48 @@ export type SettingsPatch = Partial<
     | 'alwaysOnTop'
     | 'fixedPosition'
     | 'windowCorner'
+    | 'sidebarCollapsed'
+    | 'edgeAutoHide'
+    | 'edgeSide'
+    | 'autoCheckUpdate'
   >
 >
+
+export type UpdateState =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'downloading'
+  | 'downloaded'
+  | 'not-available'
+  | 'error'
+
+export interface UpdateStatus {
+  state: UpdateState
+  version?: string
+  percent?: number
+  message?: string
+  checkedAt?: number
+}
 
 export interface Snapshot {
   projects: Project[]
   progress: ProgressEntry[]
   tasks: Task[]
   recordCards: RecordCard[]
+  anniversaries: Anniversary[]
   reflections: Reflection[]
   notes: Note[]
   captures: CaptureItem[]
   settings: Settings
+  version: string
 }
 
 export interface SmartPlannerApi {
   getSnapshot: () => Promise<Snapshot>
   createProject: (input: ProjectInput) => Promise<Project | null>
   updateProject: (id: string, patch: Partial<ProjectInput>) => Promise<Project | null>
+  reorderProjects: (ids: string[]) => Promise<void>
   deleteProject: (id: string) => Promise<void>
   addProgress: (input: ProgressInput) => Promise<ProgressEntry | null>
   deleteProgress: (id: string) => Promise<void>
@@ -191,11 +245,18 @@ export interface SmartPlannerApi {
     patch: RecordCardPatch
   ) => Promise<RecordCard | null>
   deleteRecordCard: (id: string) => Promise<void>
+  createAnniversary: (input: AnniversaryInput) => Promise<Anniversary | null>
+  updateAnniversary: (
+    id: string,
+    patch: AnniversaryPatch
+  ) => Promise<Anniversary | null>
+  deleteAnniversary: (id: string) => Promise<void>
   saveReflection: (input: ReflectionInput) => Promise<Reflection | null>
   createNote: (input: NoteInput) => Promise<Note | null>
   updateNote: (id: string, patch: NotePatch) => Promise<Note | null>
   deleteNote: (id: string) => Promise<void>
   saveCapture: (text: string) => Promise<CaptureItem | null>
+  deleteCapture: (id: string) => Promise<void>
   listCaptures: () => Promise<CaptureItem[]>
   updateSettings: (patch: SettingsPatch) => Promise<Settings>
   chooseDataDir: () => Promise<Snapshot | null>
@@ -206,6 +267,15 @@ export interface SmartPlannerApi {
   openQuickCapture: () => void
   hideQuickCapture: () => void
   controlWindow: (action: WindowAction) => void
+  setEdgeVisible: (visible: boolean) => void
+  activateEdge: (key: string) => void
+  checkForUpdates: () => Promise<UpdateStatus>
+  installUpdate: () => void
   onCapture: (callback: (item: CaptureItem) => void) => () => void
+  onUpdateStatus: (callback: (status: UpdateStatus) => void) => () => void
+  onEdgeState: (
+    callback: (state: { hidden: boolean; side: EdgeSide }) => void
+  ) => () => void
+  onNavigate: (callback: (key: string) => void) => () => void
   platform: string
 }

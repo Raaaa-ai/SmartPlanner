@@ -1,6 +1,9 @@
-import { useState } from 'react'
-import { Icon, type IconName } from '../components/Icon'
+import { useEffect, useState } from 'react'
+import { Icon } from '../components/Icon'
 import { TitleBar } from '../components/TitleBar'
+import { NAV, NAV_GROUPS, type ModuleKey } from '../lib/nav'
+import { useWorkspace } from '../state/WorkspaceContext'
+import { AnniversariesView } from './AnniversariesView'
 import { CalendarView } from './CalendarView'
 import { NotesView } from './NotesView'
 import { ProjectsView } from './ProjectsView'
@@ -10,42 +13,16 @@ import { SettingsView } from './SettingsView'
 import { TasksView } from './TasksView'
 import { TodayView } from './TodayView'
 
-type ModuleKey =
-  | 'today'
-  | 'tasks'
-  | 'projects'
-  | 'calendar'
-  | 'records'
-  | 'reflection'
-  | 'notes'
-  | 'settings'
-
-const NAV: { key: ModuleKey; label: string; icon: IconName }[] = [
-  { key: 'today', label: '今日', icon: 'sun' },
-  { key: 'tasks', label: '待办', icon: 'tasks' },
-  { key: 'projects', label: '项目', icon: 'folder' },
-  { key: 'calendar', label: '月历', icon: 'calendar' },
-  { key: 'records', label: '记录卡', icon: 'award' },
-  { key: 'reflection', label: '每日感想', icon: 'pen' },
-  { key: 'notes', label: '笔记', icon: 'note' },
-  { key: 'settings', label: '设置', icon: 'settings' }
-]
-
-const NAV_GROUPS: { label: string; keys: ModuleKey[] }[] = [
-  { label: '工作台', keys: ['today', 'tasks', 'projects', 'calendar'] },
-  { label: '记录', keys: ['records', 'reflection', 'notes'] },
-  { label: '系统', keys: ['settings'] }
-]
-
 const SUBTITLES: Record<ModuleKey, string> = {
   today: '把今天的重点放在一屏里',
-  tasks: '短期待办与清单',
+  tasks: '今天、一周内与未来的待办安排',
   projects: '长期项目的整体进度与每日进展',
   calendar: '当月每天的工作记录一览',
   records: '记录获奖、里程碑与值得纪念的事',
+  anniversary: '记住重要的日子，看看还有多少天',
   reflection: '每天写一点，留下当时的想法',
-  notes: '随手记下零散的想法与资料',
-  settings: '外观、窗口、存储与启动项'
+  notes: '想法笔记与速记都收在这里',
+  settings: '外观、窗口、存储、更新与启动项'
 }
 
 function ModuleContent({ active }: { active: ModuleKey }): React.JSX.Element {
@@ -54,6 +31,7 @@ function ModuleContent({ active }: { active: ModuleKey }): React.JSX.Element {
   if (active === 'projects') return <ProjectsView />
   if (active === 'calendar') return <CalendarView />
   if (active === 'records') return <RecordCardsView />
+  if (active === 'anniversary') return <AnniversariesView />
   if (active === 'reflection') return <ReflectionsView />
   if (active === 'notes') return <NotesView />
   return <SettingsView />
@@ -65,30 +43,116 @@ function initialModule(): ModuleKey {
   return match ? match.key : 'today'
 }
 
+function UpdateBanner(): React.JSX.Element | null {
+  const { updateStatus, installUpdate } = useWorkspace()
+  const [dismissed, setDismissed] = useState(false)
+
+  if (updateStatus.state === 'downloaded' && !dismissed) {
+    return (
+      <div className="update-banner">
+        <div className="update-banner-text">
+          <Icon name="spark" size={16} />
+          <span>
+            新版本 {updateStatus.version ?? ''} 已下载，重启后自动安装
+          </span>
+        </div>
+        <div className="update-banner-actions">
+          <button className="ghost-button" onClick={() => setDismissed(true)}>
+            稍后
+          </button>
+          <button className="primary-button" onClick={installUpdate}>
+            立即重启安装
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (updateStatus.state === 'downloading') {
+    return (
+      <div className="update-banner downloading">
+        <div className="update-banner-text">
+          <Icon name="spark" size={16} />
+          <span>
+            正在后台下载新版本 {updateStatus.version ?? ''}
+            {typeof updateStatus.percent === 'number'
+              ? ` · ${updateStatus.percent}%`
+              : ''}
+          </span>
+        </div>
+        <span className="muted update-banner-note">可以继续使用</span>
+      </div>
+    )
+  }
+
+  return null
+}
+
 export function Workbench(): React.JSX.Element {
+  const { settings, updateSettings, edgeHidden, hideEdgeWindow } = useWorkspace()
   const [active, setActive] = useState<ModuleKey>(initialModule)
   const activeNav = NAV.find((item) => item.key === active)!
+  const collapsed = settings.sidebarCollapsed
+  const autoHide = settings.edgeAutoHide
+
+  useEffect(() => {
+    return window.api.onNavigate((key) => {
+      if (NAV.some((item) => item.key === key)) {
+        setActive(key as ModuleKey)
+      }
+    })
+  }, [])
 
   return (
-    <div className="window-frame">
+    <div
+      className={collapsed ? 'window-frame sidebar-collapsed' : 'window-frame'}
+      onMouseLeave={() => {
+        if (autoHide && !edgeHidden) hideEdgeWindow()
+      }}
+    >
       <TitleBar />
 
       <div className="app-shell">
-        <aside className="sidebar">
+        <aside className={collapsed ? 'sidebar collapsed' : 'sidebar'}>
+          <div className="sidebar-top">
+            {!collapsed && (
+              <div className="brand">
+                <span className="brand-logo">S</span>
+                <div>
+                  <div className="brand-name">SmartPlanner</div>
+                  <div className="brand-sub">本地个人工作台</div>
+                </div>
+              </div>
+            )}
+            <button
+              className="sidebar-collapse"
+              title={collapsed ? '展开侧栏' : '收起侧栏'}
+              onClick={() =>
+                void updateSettings({ sidebarCollapsed: !collapsed })
+              }
+            >
+              <Icon
+                name={collapsed ? 'chevron-right' : 'chevron-left'}
+                size={16}
+              />
+            </button>
+          </div>
+
           <nav className="nav">
             {NAV_GROUPS.map((group) => (
               <div className="nav-group" key={group.label}>
-                <div className="nav-label">{group.label}</div>
+                {!collapsed && <div className="nav-label">{group.label}</div>}
                 {group.keys.map((key) => {
                   const item = NAV.find((entry) => entry.key === key)!
                   return (
                     <button
                       key={item.key}
                       className={item.key === active ? 'nav-item active' : 'nav-item'}
+                      title={collapsed ? item.label : undefined}
                       onClick={() => setActive(item.key)}
                     >
                       <Icon name={item.icon} size={17} />
-                      <span>{item.label}</span>
+                      {!collapsed && <span>{item.label}</span>}
                     </button>
                   )
                 })}
@@ -97,19 +161,27 @@ export function Workbench(): React.JSX.Element {
           </nav>
 
           <div className="sidebar-footer">
-            <div className="footer-shortcut">
-              <span>快速记录</span>
-              <span className="shortcut-keys">
-                <kbd>Ctrl</kbd>
-                <kbd>Alt</kbd>
-                <kbd>Space</kbd>
-              </span>
-            </div>
-            <div className="footer-status">
-              <span className="status-dot" />
-              数据保存在本地
-            </div>
-            <div className="footer-note">关闭窗口后仍在托盘运行</div>
+            {!collapsed ? (
+              <>
+                <div className="footer-shortcut">
+                  <span>快速记录</span>
+                  <span className="shortcut-keys">
+                    <kbd>Ctrl</kbd>
+                    <kbd>Alt</kbd>
+                    <kbd>Space</kbd>
+                  </span>
+                </div>
+                <div className="footer-status">
+                  <span className="status-dot" />
+                  数据保存在本地
+                </div>
+                <div className="footer-note">关闭窗口后仍在托盘运行</div>
+              </>
+            ) : (
+              <div className="footer-status compact">
+                <span className="status-dot" />
+              </div>
+            )}
           </div>
         </aside>
 
@@ -132,6 +204,7 @@ export function Workbench(): React.JSX.Element {
               </div>
             </header>
 
+            <UpdateBanner />
             <ModuleContent active={active} />
           </div>
         </main>

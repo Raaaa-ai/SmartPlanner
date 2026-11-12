@@ -23,9 +23,20 @@ import {
   writeFileSync
 } from 'node:fs'
 import trayIcon from '../../resources/tray.png?asset'
+import {
+  checkForUpdates,
+  currentUpdateStatus,
+  initUpdater,
+  installUpdate
+} from './updater'
 import type {
+  Anniversary,
+  AnniversaryInput,
+  AnniversaryPatch,
+  AnniversaryRepeat,
   CaptureItem,
   CloseAction,
+  EdgeSide,
   Note,
   NoteInput,
   NotePatch,
@@ -77,6 +88,10 @@ interface AppConfig {
   alwaysOnTop?: boolean
   fixedPosition?: boolean
   windowCorner?: WindowCorner
+  sidebarCollapsed?: boolean
+  edgeAutoHide?: boolean
+  edgeSide?: EdgeSide
+  autoCheckUpdate?: boolean
   windowBounds?: { x: number; y: number; width: number; height: number }
 }
 
@@ -85,6 +100,7 @@ interface StoreData {
   progress: ProgressEntry[]
   tasks: Task[]
   recordCards: RecordCard[]
+  anniversaries: Anniversary[]
   reflections: Reflection[]
   notes: Note[]
   captures: CaptureItem[]
@@ -92,6 +108,7 @@ interface StoreData {
 
 let mainWindow: BrowserWindow | null = null
 let quickWindow: BrowserWindow | null = null
+let edgeWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
 
@@ -101,6 +118,7 @@ let store: StoreData = {
   progress: [],
   tasks: [],
   recordCards: [],
+  anniversaries: [],
   reflections: [],
   notes: [],
   captures: []
@@ -111,6 +129,11 @@ let configFile = ''
 let boundsTimer: NodeJS.Timeout | null = null
 let programmaticMove = false
 let closeDialogOpen = false
+let edgeHidden = false
+let edgeHideTimer: NodeJS.Timeout | null = null
+let edgeRestoreBounds: { x: number; y: number; width: number; height: number } | null =
+  null
+let updateTimer: NodeJS.Timeout | null = null
 
 function readJson<T>(file: string): T | null {
   try {
@@ -153,7 +176,13 @@ function normalizeTime(value: unknown): string {
 function normalizeStore(raw: unknown): StoreData {
   const data = raw as Partial<StoreData> | null
   return {
-    projects: Array.isArray(data?.projects) ? data.projects : [],
+    projects: Array.isArray(data?.projects)
+      ? data.projects.map((project, index) => ({
+          ...project,
+          sortOrder:
+            typeof project.sortOrder === 'number' ? project.sortOrder : index
+        }))
+      : [],
     progress: Array.isArray(data?.progress) ? data.progress : [],
     tasks: Array.isArray(data?.tasks)
       ? data.tasks.map((task) => ({
@@ -163,10 +192,17 @@ function normalizeStore(raw: unknown): StoreData {
         }))
       : [],
     recordCards: Array.isArray(data?.recordCards) ? data.recordCards : [],
+    anniversaries: Array.isArray(data?.anniversaries) ? data.anniversaries : [],
     reflections: Array.isArray(data?.reflections) ? data.reflections : [],
     notes: Array.isArray(data?.notes) ? data.notes : [],
     captures: Array.isArray(data?.captures) ? data.captures : []
   }
+}
+
+function sortedProjects(): Project[] {
+  return [...store.projects].sort(
+    (a, b) => a.sortOrder - b.sortOrder || a.createdAt - b.createdAt
+  )
 }
 
 function currentSettings(): Settings {
@@ -184,25 +220,31 @@ function currentSettings(): Settings {
       config.closeAction === 'tray' || config.closeAction === 'quit'
         ? config.closeAction
         : 'ask',
-    alwaysOnTop: config.alwaysOnTop === true,
+    alwaysOnTop: config.edgeAutoHide === true ? false : config.alwaysOnTop === true,
     fixedPosition: config.fixedPosition === true,
     windowCorner: CORNERS.includes(config.windowCorner as WindowCorner)
       ? (config.windowCorner as WindowCorner)
       : 'center',
+    sidebarCollapsed: config.sidebarCollapsed === true,
+    edgeAutoHide: config.edgeAutoHide === true,
+    edgeSide: 'right',
+    autoCheckUpdate: config.autoCheckUpdate !== false,
     dataDir
   }
 }
 
 function snapshot(): Snapshot {
   return {
-    projects: store.projects,
+    projects: sortedProjects(),
     progress: store.progress,
     tasks: store.tasks,
     recordCards: store.recordCards,
+    anniversaries: store.anniversaries,
     reflections: store.reflections,
     notes: store.notes,
     captures: store.captures,
-    settings: currentSettings()
+    settings: currentSettings(),
+    version: app.getVersion()
   }
 }
 
@@ -384,6 +426,8 @@ function placeWindow(win: BrowserWindow, corner: WindowCorner): void {
 }
 
 function guardWindowMove(win: BrowserWindow): void {
+  if (edgeHidden) return
+
   if (!currentSettings().fixedPosition) {
     scheduleBoundsSave(win)
     return
@@ -420,7 +464,13 @@ function boundsVisibleOnScreen(bounds: {
 }
 
 function scheduleBoundsSave(win: BrowserWindow): void {
-  if (currentSettings().fixedPosition) return
+  if (
+    currentSettings().fixedPosition ||
+    currentSettings().edgeAutoHide ||
+    edgeHidden
+  ) {
+    return
+  }
   if (boundsTimer) clearTimeout(boundsTimer)
 
   boundsTimer = setTimeout(() => {
@@ -469,11 +519,23 @@ function createMainWindow(): BrowserWindow {
     }
   })
 
-  win.webContents.setZoomFactor(1)
-  void win.webContents.setVisualZoomLevelLimits(1, 1)
+  try {
+    win.webContents.setZoomFactor(1)
+  } catch {
+  }
+  void win.webContents
+    .setVisualZoomLevelLimits(1, 1)
+    .catch(() => undefined)
   applyWindowSettings(win)
 
-  win.on('ready-to-show', () => win.show())
+  win.on('ready-to-show', () => {
+    win.show()
+    edgeSendState()
+    if (currentSettings().edgeAutoHide) {
+      setTimeout(() => hideToEdge(), 800)
+    }
+  })
+  win.webContents.on('did-finish-load', () => edgeSendState())
   win.on('move', () => guardWindowMove(win))
   win.on('resize', () => scheduleBoundsSave(win))
 
@@ -496,9 +558,176 @@ function createMainWindow(): BrowserWindow {
   return win
 }
 
+const EDGE_STRIP = 54
+
+function edgeSendState(): void {
+  mainWindow?.webContents.send('window:edge-state', {
+    hidden: edgeHidden,
+    side: currentSettings().edgeSide
+  })
+}
+
+function cancelEdgeHide(): void {
+  if (edgeHideTimer) {
+    clearTimeout(edgeHideTimer)
+    edgeHideTimer = null
+  }
+}
+
+function edgeDockedBounds(): {
+  x: number
+  y: number
+  width: number
+  height: number
+} {
+  const base =
+    edgeRestoreBounds ??
+    config.windowBounds ??
+    mainWindow?.getBounds() ?? { x: 0, y: 0, width: 1160, height: 780 }
+  const area = screen.getDisplayMatching(base).workArea
+  const y = Math.min(
+    Math.max(base.y, area.y),
+    area.y + area.height - base.height
+  )
+  return {
+    x: area.x + area.width - base.width,
+    y,
+    width: base.width,
+    height: base.height
+  }
+}
+
+function showFromEdge(): void {
+  if (!mainWindow) {
+    showMainWindow()
+    return
+  }
+
+  cancelEdgeHide()
+  hideEdgeWindowBar()
+  if (!edgeHidden) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+    return
+  }
+
+  programmaticMove = true
+  mainWindow.setBounds(edgeDockedBounds())
+  setTimeout(() => {
+    programmaticMove = false
+  }, 150)
+
+  edgeHidden = false
+  try {
+    mainWindow.setFocusable(true)
+    mainWindow.setAlwaysOnTop(false)
+  } catch {
+  }
+  mainWindow.show()
+  mainWindow.focus()
+  edgeSendState()
+}
+
+function restoreFromEdge(): void {
+  if (!mainWindow) return
+  cancelEdgeHide()
+  hideEdgeWindowBar()
+  edgeHidden = false
+
+  const restore = edgeRestoreBounds
+  if (restore && boundsVisibleOnScreen(restore)) {
+    programmaticMove = true
+    mainWindow.setBounds(restore)
+    config.windowBounds = restore
+    persistConfig()
+    setTimeout(() => {
+      programmaticMove = false
+    }, 150)
+  }
+
+  edgeRestoreBounds = null
+  try {
+    mainWindow.setFocusable(true)
+    mainWindow.setAlwaysOnTop(currentSettings().alwaysOnTop, 'floating')
+  } catch {
+  }
+  edgeSendState()
+}
+
+function hideToEdge(): void {
+  if (!mainWindow || !currentSettings().edgeAutoHide) return
+  cancelEdgeHide()
+  if (edgeHidden) return
+
+  const bounds = mainWindow.getBounds()
+  if (bounds.width <= 0) return
+
+  if (!edgeRestoreBounds) {
+    edgeRestoreBounds = bounds
+    config.windowBounds = bounds
+  }
+
+  const base = edgeRestoreBounds
+  const area = screen.getDisplayMatching(base).workArea
+  const y = Math.min(
+    Math.max(base.y, area.y),
+    area.y + area.height - base.height
+  )
+  const x = area.x + area.width - EDGE_STRIP
+
+  programmaticMove = true
+  try {
+    mainWindow.setFocusable(false)
+    mainWindow.setAlwaysOnTop(false)
+    mainWindow.blur()
+  } catch {
+  }
+  mainWindow.setPosition(Math.round(x), Math.round(y))
+  edgeHidden = true
+  persistConfig()
+  showEdgeWindow()
+  setTimeout(() => {
+    programmaticMove = false
+    edgeSendState()
+  }, 150)
+}
+
+function scheduleEdgeHide(): void {
+  if (!currentSettings().edgeAutoHide || closeDialogOpen) return
+  cancelEdgeHide()
+  edgeHideTimer = setTimeout(() => {
+    edgeHideTimer = null
+    hideToEdge()
+  }, 450)
+}
+
+function applyEdgeBehavior(previous: Settings, next: Settings): void {
+  if (!mainWindow) return
+
+  if (next.edgeAutoHide) {
+    if (!previous.edgeAutoHide) {
+      setTimeout(() => hideToEdge(), 200)
+    } else if (previous.edgeSide !== next.edgeSide) {
+      if (edgeHidden) {
+        edgeHidden = false
+        setTimeout(() => hideToEdge(), 80)
+      } else {
+        hideToEdge()
+      }
+    }
+  } else if (previous.edgeAutoHide) {
+    restoreFromEdge()
+  }
+}
+
 function showMainWindow(): void {
   if (!mainWindow) {
     mainWindow = createMainWindow()
+    return
+  }
+  if (edgeHidden) {
+    showFromEdge()
     return
   }
   if (mainWindow.isMinimized()) mainWindow.restore()
@@ -507,6 +736,10 @@ function showMainWindow(): void {
 }
 
 function toggleMainWindow(): void {
+  if (edgeHidden) {
+    showFromEdge()
+    return
+  }
   if (mainWindow?.isVisible()) {
     mainWindow.hide()
   } else {
@@ -590,6 +823,68 @@ function createQuickWindow(): BrowserWindow {
   return win
 }
 
+function createEdgeWindow(): BrowserWindow {
+  const win = new BrowserWindow({
+    width: 54,
+    height: 640,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    hasShadow: false,
+    focusable: false,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false
+    }
+  })
+
+  win.setAlwaysOnTop(true, 'floating')
+  win.setFocusable(false)
+
+  win.on('closed', () => {
+    edgeWindow = null
+  })
+
+  loadRenderer(win, 'edge')
+  return win
+}
+
+function placeEdgeWindow(win: BrowserWindow): void {
+  const base =
+    edgeRestoreBounds ??
+    config.windowBounds ??
+    screen.getPrimaryDisplay().workArea
+  const area = screen.getDisplayMatching(base).workArea
+  const [width] = win.getSize()
+  const height = Math.max(240, Math.min(640, area.height - 40))
+  win.setSize(width, height)
+  win.setPosition(
+    Math.round(area.x + area.width - width),
+    Math.round(area.y + (area.height - height) / 2)
+  )
+}
+
+function showEdgeWindow(): void {
+  if (!currentSettings().edgeAutoHide) return
+  if (!edgeWindow || edgeWindow.isDestroyed()) {
+    edgeWindow = createEdgeWindow()
+  }
+  placeEdgeWindow(edgeWindow)
+  edgeWindow.showInactive()
+}
+
+function hideEdgeWindowBar(): void {
+  if (edgeWindow && !edgeWindow.isDestroyed()) {
+    edgeWindow.hide()
+  }
+}
+
 function positionQuickWindow(win: BrowserWindow): void {
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
   const area = display.workArea
@@ -626,6 +921,7 @@ function createTray(): void {
   const menu = Menu.buildFromTemplate([
     { label: '打开工作台', click: showMainWindow },
     { label: '快速记录', accelerator: 'Ctrl+Alt+Space', click: showQuickCapture },
+    { label: '检查更新', click: () => void checkForUpdates() },
     { type: 'separator' },
     {
       label: '退出',
@@ -666,6 +962,10 @@ function registerIpc(): void {
     if (!input) return null
 
     const now = Date.now()
+    const minOrder = store.projects.reduce(
+      (min, item) => Math.min(min, item.sortOrder),
+      0
+    )
     const project: Project = {
       id: randomUUID(),
       name: input.name,
@@ -674,6 +974,7 @@ function registerIpc(): void {
       status: input.status ?? 'active',
       startDate: input.startDate ?? todayISO(),
       targetDate: input.targetDate ?? '',
+      sortOrder: minOrder - 1,
       createdAt: now,
       updatedAt: now
     }
@@ -712,6 +1013,23 @@ function registerIpc(): void {
     project.updatedAt = Date.now()
     persistStore()
     return project
+  })
+
+  ipcMain.handle('project:reorder', (_event, ids: unknown) => {
+    if (!Array.isArray(ids)) return
+    const order = new Map<string, number>()
+    ids.forEach((id, index) => {
+      if (typeof id === 'string') order.set(id, index)
+    })
+
+    for (const project of store.projects) {
+      const next = order.get(project.id)
+      if (next !== undefined) {
+        project.sortOrder = next
+        project.updatedAt = Date.now()
+      }
+    }
+    persistStore()
   })
 
   ipcMain.handle('project:delete', (_event, id: string) => {
@@ -894,6 +1212,63 @@ function registerIpc(): void {
     if (store.recordCards.length !== before) persistStore()
   })
 
+  ipcMain.handle('anniversary:create', (_event, raw: AnniversaryInput) => {
+    if (!raw || typeof raw.title !== 'string' || !raw.title.trim()) return null
+    if (typeof raw.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(raw.date)) {
+      return null
+    }
+
+    const now = Date.now()
+    const anniversary: Anniversary = {
+      id: randomUUID(),
+      title: raw.title.trim().slice(0, 120),
+      date: raw.date,
+      repeat: raw.repeat === 'once' ? 'once' : 'yearly',
+      note: typeof raw.note === 'string' ? raw.note.slice(0, 2000) : '',
+      color:
+        typeof raw.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw.color)
+          ? raw.color
+          : DEFAULT_ACCENT,
+      createdAt: now,
+      updatedAt: now
+    }
+
+    store.anniversaries.unshift(anniversary)
+    persistStore()
+    return anniversary
+  })
+
+  ipcMain.handle('anniversary:update', (_event, id: string, patch: AnniversaryPatch) => {
+    const anniversary = store.anniversaries.find((item) => item.id === id)
+    if (!anniversary || !patch || typeof patch !== 'object') return null
+
+    if (typeof patch.title === 'string' && patch.title.trim()) {
+      anniversary.title = patch.title.trim().slice(0, 120)
+    }
+    if (typeof patch.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(patch.date)) {
+      anniversary.date = patch.date
+    }
+    if (patch.repeat === 'yearly' || patch.repeat === 'once') {
+      anniversary.repeat = patch.repeat as AnniversaryRepeat
+    }
+    if (typeof patch.note === 'string') {
+      anniversary.note = patch.note.slice(0, 2000)
+    }
+    if (typeof patch.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(patch.color)) {
+      anniversary.color = patch.color
+    }
+
+    anniversary.updatedAt = Date.now()
+    persistStore()
+    return anniversary
+  })
+
+  ipcMain.handle('anniversary:delete', (_event, id: string) => {
+    const before = store.anniversaries.length
+    store.anniversaries = store.anniversaries.filter((item) => item.id !== id)
+    if (store.anniversaries.length !== before) persistStore()
+  })
+
   ipcMain.handle('reflection:save', (_event, raw: ReflectionInput) => {
     if (!raw || typeof raw.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(raw.date)) {
       return null
@@ -1003,6 +1378,12 @@ function registerIpc(): void {
     return item
   })
 
+  ipcMain.handle('capture:delete', (_event, id: string) => {
+    const before = store.captures.length
+    store.captures = store.captures.filter((item) => item.id !== id)
+    if (store.captures.length !== before) persistStore()
+  })
+
   ipcMain.handle('capture:list', () => store.captures)
 
   ipcMain.handle('settings:update', (_event, patch: SettingsPatch) => {
@@ -1047,9 +1428,24 @@ function registerIpc(): void {
       }
       if (typeof patch.fixedPosition === 'boolean') {
         config.fixedPosition = patch.fixedPosition
+        if (patch.fixedPosition) config.edgeAutoHide = false
       }
       if (CORNERS.includes(patch.windowCorner as WindowCorner)) {
         config.windowCorner = patch.windowCorner as WindowCorner
+      }
+      if (typeof patch.sidebarCollapsed === 'boolean') {
+        config.sidebarCollapsed = patch.sidebarCollapsed
+      }
+      if (typeof patch.edgeAutoHide === 'boolean') {
+        config.edgeAutoHide = patch.edgeAutoHide
+        if (patch.edgeAutoHide) {
+          config.fixedPosition = false
+          config.alwaysOnTop = false
+        }
+      }
+      config.edgeSide = 'right'
+      if (typeof patch.autoCheckUpdate === 'boolean') {
+        config.autoCheckUpdate = patch.autoCheckUpdate
       }
     }
 
@@ -1059,7 +1455,7 @@ function registerIpc(): void {
       const next = currentSettings()
       applyWindowSettings(mainWindow)
 
-      if (next.fixedPosition) {
+      if (next.fixedPosition && !next.edgeAutoHide) {
         if (patch?.windowCorner && next.windowCorner !== previous.windowCorner) {
           placeWindow(mainWindow, next.windowCorner)
           config.windowBounds = mainWindow.getBounds()
@@ -1068,6 +1464,24 @@ function registerIpc(): void {
           config.windowBounds = mainWindow.getBounds()
           persistConfig()
         }
+      }
+
+      applyEdgeBehavior(previous, next)
+    }
+
+    if (typeof patch?.autoCheckUpdate === 'boolean') {
+      if (patch.autoCheckUpdate) {
+        void checkForUpdates()
+        if (!updateTimer) {
+          updateTimer = setInterval(() => {
+            if (currentSettings().autoCheckUpdate) {
+              void checkForUpdates()
+            }
+          }, 6 * 60 * 60 * 1000)
+        }
+      } else if (updateTimer) {
+        clearInterval(updateTimer)
+        updateTimer = null
       }
     }
 
@@ -1160,6 +1574,25 @@ function registerIpc(): void {
   ipcMain.on('quick:show', showQuickCapture)
   ipcMain.on('quick:hide', hideQuickCapture)
 
+  ipcMain.handle('update:check', () => checkForUpdates())
+  ipcMain.handle('update:status', () => currentUpdateStatus())
+  ipcMain.on('update:install', () => installUpdate())
+
+  ipcMain.on('window:edge', (_event, action: unknown) => {
+    if (action === 'show') {
+      showFromEdge()
+    } else if (action === 'hide') {
+      scheduleEdgeHide()
+    }
+  })
+
+  ipcMain.on('edge:activate', (_event, key: unknown) => {
+    if (typeof key !== 'string') return
+    hideEdgeWindowBar()
+    showFromEdge()
+    mainWindow?.webContents.send('navigate:module', key)
+  })
+
   ipcMain.on('window:control', (_event, action: unknown) => {
     if (!mainWindow) return
     if (action === 'minimize') {
@@ -1187,7 +1620,19 @@ if (!gotSingleInstanceLock) {
     ensureDailyBackup()
     registerIpc()
     createTray()
+    initUpdater(() => mainWindow)
     mainWindow = createMainWindow()
+
+    if (currentSettings().autoCheckUpdate) {
+      setTimeout(() => {
+        void checkForUpdates()
+      }, 8000)
+      updateTimer = setInterval(() => {
+        if (currentSettings().autoCheckUpdate) {
+          void checkForUpdates()
+        }
+      }, 6 * 60 * 60 * 1000)
+    }
 
     try {
       app.setLoginItemSettings({ openAtLogin: currentSettings().autoLaunch })
@@ -1211,6 +1656,8 @@ if (!gotSingleInstanceLock) {
 
   app.on('will-quit', () => {
     globalShortcut.unregisterAll()
+    if (updateTimer) clearInterval(updateTimer)
+    cancelEdgeHide()
   })
 
   app.on('window-all-closed', () => {

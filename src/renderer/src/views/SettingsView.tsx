@@ -11,7 +11,11 @@ const ACCENTS = [
   '#6b5b7a',
   '#3c6e71',
   '#a37b5c',
-  '#4a4a4a'
+  '#4a4a4a',
+  '#111827',
+  '#6b7280',
+  '#d1d5db',
+  '#ffffff'
 ]
 
 const CORNER_LABEL: Record<WindowCorner, string> = {
@@ -24,10 +28,12 @@ const CORNER_LABEL: Record<WindowCorner, string> = {
 
 function Switch({
   on,
-  onChange
+  onChange,
+  disabled = false
 }: {
   on: boolean
   onChange: (value: boolean) => void
+  disabled?: boolean
 }): React.JSX.Element {
   return (
     <button
@@ -35,20 +41,52 @@ function Switch({
       className={on ? 'switch on' : 'switch'}
       role="switch"
       aria-checked={on}
+      disabled={disabled}
       onClick={() => onChange(!on)}
     />
   )
 }
 
 export function SettingsView(): React.JSX.Element {
-  const { settings, updateSettings, chooseDataDir, useDefaultDataDir } =
-    useWorkspace()
+  const {
+    settings,
+    version,
+    updateStatus,
+    updateSettings,
+    chooseDataDir,
+    useDefaultDataDir,
+    checkForUpdates,
+    installUpdate
+  } = useWorkspace()
   const [bgOpacity, setBgOpacity] = useState(settings.backgroundOpacity)
   const [switching, setSwitching] = useState(false)
+  const [checking, setChecking] = useState(false)
 
   useEffect(() => {
     setBgOpacity(settings.backgroundOpacity)
   }, [settings.backgroundOpacity])
+
+  async function handleCheckUpdate(): Promise<void> {
+    if (checking) return
+    setChecking(true)
+    await checkForUpdates()
+    setChecking(false)
+  }
+
+  const updateText = (() => {
+    if (updateStatus.state === 'checking') return '正在检查更新…'
+    if (updateStatus.state === 'available')
+      return `发现新版本 ${updateStatus.version ?? ''}，正在后台下载…`
+    if (updateStatus.state === 'downloading')
+      return `正在下载 ${updateStatus.version ?? ''} · ${updateStatus.percent ?? 0}%`
+    if (updateStatus.state === 'downloaded')
+      return `新版本 ${updateStatus.version ?? ''} 已下载，重启即可安装`
+    if (updateStatus.state === 'not-available')
+      return updateStatus.message ?? '当前已经是最新版本'
+    if (updateStatus.state === 'error')
+      return `检查失败：${updateStatus.message ?? '网络或发布源异常'}`
+    return '启动后会自动检查更新'
+  })()
 
   async function handleChooseDir(): Promise<void> {
     if (switching) return
@@ -172,7 +210,9 @@ export function SettingsView(): React.JSX.Element {
                 uiScale: 100,
                 alwaysOnTop: false,
                 fixedPosition: false,
-                windowCorner: 'center'
+                windowCorner: 'center',
+                sidebarCollapsed: false,
+                edgeAutoHide: false
               })
             }
           >
@@ -189,10 +229,15 @@ export function SettingsView(): React.JSX.Element {
         <div className="settings-row">
           <div className="settings-info">
             <strong>置顶显示</strong>
-            <span>让工作台始终显示在其他窗口上方。</span>
+            <span>
+              {settings.edgeAutoHide
+                ? '贴边自动隐藏开启时，窗口会置于其他窗口下层。'
+                : '让工作台始终显示在其他窗口上方。'}
+            </span>
           </div>
           <Switch
             on={settings.alwaysOnTop}
+            disabled={settings.edgeAutoHide}
             onChange={(value) => void updateSettings({ alwaysOnTop: value })}
           />
         </div>
@@ -229,6 +274,32 @@ export function SettingsView(): React.JSX.Element {
               </option>
             ))}
           </select>
+        </div>
+
+        <div className="settings-row">
+          <div className="settings-info">
+            <strong>收起侧栏</strong>
+            <span>只保留图标导航，给内容区腾出更多空间。</span>
+          </div>
+          <Switch
+            on={settings.sidebarCollapsed}
+            onChange={(value) =>
+              void updateSettings({ sidebarCollapsed: value })
+            }
+          />
+        </div>
+
+        <div className="settings-row">
+          <div className="settings-info">
+            <strong>贴边自动隐藏</strong>
+            <span>
+              主界面会滑到屏幕右侧下层，屏幕右边缘保留「今日」「待办」等竖排标签；鼠标移到标签上自动展开。
+            </span>
+          </div>
+          <Switch
+            on={settings.edgeAutoHide}
+            onChange={(value) => void updateSettings({ edgeAutoHide: value })}
+          />
         </div>
 
         <div className="settings-row">
@@ -350,11 +421,61 @@ export function SettingsView(): React.JSX.Element {
 
       <section className="card panel">
         <div className="panel-head">
+          <h3>软件更新</h3>
+          <span className="muted">当前版本 {version}</span>
+        </div>
+
+        <div className="settings-row">
+          <div className="settings-info">
+            <strong>自动检查更新</strong>
+            <span>{updateText}</span>
+          </div>
+          <Switch
+            on={settings.autoCheckUpdate}
+            onChange={(value) =>
+              void updateSettings({ autoCheckUpdate: value })
+            }
+          />
+        </div>
+
+        {updateStatus.state === 'downloading' && (
+          <div className="update-progress">
+            <div
+              className="update-progress-fill"
+              style={{ width: `${updateStatus.percent ?? 0}%` }}
+            />
+          </div>
+        )}
+
+        <div className="settings-row">
+          <div className="settings-info">
+            <strong>手动检查</strong>
+            <span>从 GitHub Releases 获取最新版本，下载完成后可重启安装。</span>
+          </div>
+          <div className="settings-control">
+            <button
+              className="ghost-button"
+              onClick={() => void handleCheckUpdate()}
+              disabled={checking || updateStatus.state === 'downloading'}
+            >
+              {checking ? '检查中…' : '检查更新'}
+            </button>
+            {updateStatus.state === 'downloaded' && (
+              <button className="primary-button" onClick={installUpdate}>
+                重启安装
+              </button>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="card panel">
+        <div className="panel-head">
           <h3>关于</h3>
         </div>
         <div className="settings-row">
           <div className="settings-info">
-            <strong>SmartPlanner 0.2.0</strong>
+            <strong>SmartPlanner {version}</strong>
             <span>
               如果修改后界面没有变化，请从托盘菜单「退出」旧实例后重新启动。
             </span>

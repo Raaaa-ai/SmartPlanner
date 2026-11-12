@@ -8,6 +8,10 @@ import {
   type ReactNode
 } from 'react'
 import type {
+  Anniversary,
+  AnniversaryInput,
+  AnniversaryPatch,
+  EdgeSide,
   Note,
   NoteInput,
   NotePatch,
@@ -25,12 +29,15 @@ import type {
   Snapshot,
   Task,
   TaskInput,
-  TaskPatch
+  TaskPatch,
+  UpdateStatus
 } from '../../../shared/types'
+import { applyAccent } from '../lib/theme'
 
 interface WorkspaceValue extends Snapshot {
   createProject: (input: ProjectInput) => Promise<Project | null>
   updateProject: (id: string, patch: Partial<ProjectInput>) => Promise<Project | null>
+  reorderProjects: (ids: string[]) => Promise<void>
   deleteProject: (id: string) => Promise<void>
   addProgress: (input: ProgressInput) => Promise<ProgressEntry | null>
   deleteProgress: (id: string) => Promise<void>
@@ -43,19 +50,36 @@ interface WorkspaceValue extends Snapshot {
     patch: RecordCardPatch
   ) => Promise<RecordCard | null>
   deleteRecordCard: (id: string) => Promise<void>
+  createAnniversary: (input: AnniversaryInput) => Promise<Anniversary | null>
+  updateAnniversary: (
+    id: string,
+    patch: AnniversaryPatch
+  ) => Promise<Anniversary | null>
+  deleteAnniversary: (id: string) => Promise<void>
   saveReflection: (input: ReflectionInput) => Promise<Reflection | null>
   createNote: (input: NoteInput) => Promise<Note | null>
   updateNote: (id: string, patch: NotePatch) => Promise<Note | null>
   deleteNote: (id: string) => Promise<void>
+  deleteCapture: (id: string) => Promise<void>
   updateSettings: (patch: SettingsPatch) => Promise<Settings>
   chooseDataDir: () => Promise<boolean>
   useDefaultDataDir: () => Promise<boolean>
+  updateStatus: UpdateStatus
+  checkForUpdates: () => Promise<UpdateStatus>
+  installUpdate: () => void
+  edgeHidden: boolean
+  edgeSide: EdgeSide
+  showEdgeWindow: () => void
+  hideEdgeWindow: () => void
 }
 
 const WorkspaceContext = createContext<WorkspaceValue | null>(null)
 
 export function WorkspaceProvider({ children }: { children: ReactNode }): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: 'idle' })
+  const [edgeHidden, setEdgeHidden] = useState(false)
+  const [edgeSide, setEdgeSide] = useState<EdgeSide>('left')
 
   useEffect(() => {
     void window.api.getSnapshot().then(setSnapshot)
@@ -65,15 +89,28 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
         prev ? { ...prev, captures: [item, ...prev.captures] } : prev
       )
     })
-    return unsubscribe
+    const unsubscribeUpdate = window.api.onUpdateStatus(setUpdateStatus)
+    const unsubscribeEdge = window.api.onEdgeState((state) => {
+      setEdgeHidden(state.hidden)
+      setEdgeSide(state.side)
+    })
+    return () => {
+      unsubscribe()
+      unsubscribeUpdate()
+      unsubscribeEdge()
+    }
   }, [])
+
+  useEffect(() => {
+    if (snapshot) setEdgeSide(snapshot.settings.edgeSide)
+  }, [snapshot?.settings.edgeSide])
 
   const accent = snapshot?.settings.accent
   const backgroundBlur = snapshot?.settings.backgroundBlur
   const backgroundOpacity = snapshot?.settings.backgroundOpacity
 
   useEffect(() => {
-    if (accent) document.documentElement.style.setProperty('--accent', accent)
+    if (accent) applyAccent(accent)
   }, [accent])
 
   useEffect(() => {
@@ -114,6 +151,21 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
     },
     []
   )
+
+  const reorderProjects = useCallback(async (ids: string[]) => {
+    await window.api.reorderProjects(ids)
+    setSnapshot((prev) => {
+      if (!prev) return prev
+      const order = new Map(ids.map((id, index) => [id, index]))
+      const projects = [...prev.projects]
+        .map((project) => ({
+          ...project,
+          sortOrder: order.get(project.id) ?? project.sortOrder
+        }))
+        .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt - b.createdAt)
+      return { ...prev, projects }
+    })
+  }, [])
 
   const deleteProject = useCallback(async (id: string) => {
     await window.api.deleteProject(id)
@@ -235,6 +287,50 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
     )
   }, [])
 
+  const createAnniversary = useCallback(async (input: AnniversaryInput) => {
+    const anniversary = await window.api.createAnniversary(input)
+    if (anniversary) {
+      setSnapshot((prev) =>
+        prev
+          ? { ...prev, anniversaries: [anniversary, ...prev.anniversaries] }
+          : prev
+      )
+    }
+    return anniversary
+  }, [])
+
+  const updateAnniversary = useCallback(
+    async (id: string, patch: AnniversaryPatch) => {
+      const anniversary = await window.api.updateAnniversary(id, patch)
+      if (anniversary) {
+        setSnapshot((prev) =>
+          prev
+            ? {
+                ...prev,
+                anniversaries: prev.anniversaries.map((item) =>
+                  item.id === anniversary.id ? anniversary : item
+                )
+              }
+            : prev
+        )
+      }
+      return anniversary
+    },
+    []
+  )
+
+  const deleteAnniversary = useCallback(async (id: string) => {
+    await window.api.deleteAnniversary(id)
+    setSnapshot((prev) =>
+      prev
+        ? {
+            ...prev,
+            anniversaries: prev.anniversaries.filter((item) => item.id !== id)
+          }
+        : prev
+    )
+  }, [])
+
   const saveReflection = useCallback(async (input: ReflectionInput) => {
     const reflection = await window.api.saveReflection(input)
     setSnapshot((prev) => {
@@ -280,10 +376,37 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
     )
   }, [])
 
+  const deleteCapture = useCallback(async (id: string) => {
+    await window.api.deleteCapture(id)
+    setSnapshot((prev) =>
+      prev
+        ? { ...prev, captures: prev.captures.filter((item) => item.id !== id) }
+        : prev
+    )
+  }, [])
+
   const updateSettings = useCallback(async (patch: SettingsPatch) => {
     const settings = await window.api.updateSettings(patch)
     setSnapshot((prev) => (prev ? { ...prev, settings } : prev))
     return settings
+  }, [])
+
+  const checkForUpdates = useCallback(async () => {
+    const next = await window.api.checkForUpdates()
+    setUpdateStatus(next)
+    return next
+  }, [])
+
+  const installUpdate = useCallback(() => {
+    window.api.installUpdate()
+  }, [])
+
+  const showEdgeWindow = useCallback(() => {
+    window.api.setEdgeVisible(true)
+  }, [])
+
+  const hideEdgeWindow = useCallback(() => {
+    window.api.setEdgeVisible(false)
   }, [])
 
   const chooseDataDir = useCallback(async () => {
@@ -304,6 +427,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
       ...snapshot,
       createProject,
       updateProject,
+      reorderProjects,
       deleteProject,
       addProgress,
       deleteProgress,
@@ -313,18 +437,30 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
       createRecordCard,
       updateRecordCard,
       deleteRecordCard,
+      createAnniversary,
+      updateAnniversary,
+      deleteAnniversary,
       saveReflection,
       createNote,
       updateNote,
       deleteNote,
+      deleteCapture,
       updateSettings,
       chooseDataDir,
-      useDefaultDataDir
+      useDefaultDataDir,
+      updateStatus,
+      checkForUpdates,
+      installUpdate,
+      edgeHidden,
+      edgeSide,
+      showEdgeWindow,
+      hideEdgeWindow
     }
   }, [
     snapshot,
     createProject,
     updateProject,
+    reorderProjects,
     deleteProject,
     addProgress,
     deleteProgress,
@@ -334,13 +470,24 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
     createRecordCard,
     updateRecordCard,
     deleteRecordCard,
+    createAnniversary,
+    updateAnniversary,
+    deleteAnniversary,
     saveReflection,
     createNote,
     updateNote,
     deleteNote,
+    deleteCapture,
     updateSettings,
     chooseDataDir,
-    useDefaultDataDir
+    useDefaultDataDir,
+    updateStatus,
+    checkForUpdates,
+    installUpdate,
+    edgeHidden,
+    edgeSide,
+    showEdgeWindow,
+    hideEdgeWindow
   ])
 
   if (!value) {

@@ -6,6 +6,8 @@ export type IconName =
   | 'folder'
   | 'calendar'
   | 'award'
+  | 'gift'
+  | 'archive'
   | 'pen'
   | 'note'
   | 'settings'
@@ -51,6 +53,19 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <circle cx="12" cy="9" r="5" />
       <path d="M8.5 13.5 7 22l5-2.5 5 2.5-1.5-8.5" />
+    </>
+  ),
+  gift: (
+    <>
+      <rect x="3" y="8" width="18" height="4" rx="1" />
+      <path d="M5 12v9h14v-9M12 8v13" />
+      <path d="M12 8c-1-2.2-2.4-3.5-4-3.5a2.5 2.5 0 0 0 0 5h4ZM12 8c1-2.2 2.4-3.5 4-3.5a2.5 2.5 0 0 1 0 5h-4Z" />
+    </>
+  ),
+  archive: (
+    <>
+      <rect x="3" y="4" width="18" height="5" rx="1.5" />
+      <path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4" />
     </>
   ),
   pen: (

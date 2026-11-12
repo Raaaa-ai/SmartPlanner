@@ -2,41 +2,81 @@ import { useState } from 'react'
 import { Icon } from '../components/Icon'
 import { TaskModal } from '../components/TaskModal'
 import { TaskRow } from '../components/TaskRow'
+import { addDaysISO, todayISO } from '../lib/date'
 import { sortDoneTasks, sortOpenTasks } from '../lib/tasks'
 import { useWorkspace } from '../state/WorkspaceContext'
 
-type Filter = 'all' | 'open' | 'done'
+type Filter = 'today' | 'week' | 'future' | 'done'
+
+const EMPTY_COPY: Record<Filter, { title: string; hint: string }> = {
+  today: {
+    title: '今天没有待办',
+    hint: '今天和已经逾期的待办会出现在这里。'
+  },
+  week: {
+    title: '一周内没有安排',
+    hint: '未来 7 天内到期的待办会出现在这里。'
+  },
+  future: {
+    title: '未来还没有安排',
+    hint: '更远的计划或未设置日期的待办会放在这里。'
+  },
+  done: {
+    title: '还没有已完成的待办',
+    hint: '完成一条待办后，会自动归档到这里。'
+  }
+}
 
 export function TasksView(): React.JSX.Element {
   const { tasks } = useWorkspace()
-  const [filter, setFilter] = useState<Filter>('all')
+  const [filter, setFilter] = useState<Filter>('today')
   const [creating, setCreating] = useState(false)
 
-  const openTasks = sortOpenTasks(tasks.filter((task) => !task.done))
+  const today = todayISO()
+  const weekEnd = addDaysISO(today, 7)
+  const openTasks = tasks.filter((task) => !task.done)
   const doneTasks = sortDoneTasks(tasks.filter((task) => task.done))
 
-  const showOpen = filter !== 'done'
-  const showDone = filter !== 'open'
-  const nothing =
-    (filter === 'open' && openTasks.length === 0) ||
-    (filter === 'done' && doneTasks.length === 0) ||
-    (filter === 'all' && tasks.length === 0)
+  const groups: Record<'today' | 'week' | 'future', typeof tasks> = {
+    today: sortOpenTasks(
+      openTasks.filter((task) => task.dueDate !== '' && task.dueDate <= today)
+    ),
+    week: sortOpenTasks(
+      openTasks.filter(
+        (task) =>
+          task.dueDate !== '' && task.dueDate > today && task.dueDate <= weekEnd
+      )
+    ),
+    future: sortOpenTasks(
+      openTasks.filter(
+        (task) => task.dueDate === '' || task.dueDate > weekEnd
+      )
+    )
+  }
+
+  const visible = filter === 'done' ? doneTasks : groups[filter]
 
   return (
     <div className="tasks-page">
       <div className="view-toolbar">
         <div className="segmented">
           <button
-            className={filter === 'all' ? 'segment active' : 'segment'}
-            onClick={() => setFilter('all')}
+            className={filter === 'today' ? 'segment active' : 'segment'}
+            onClick={() => setFilter('today')}
           >
-            全部 {tasks.length}
+            今天 {groups.today.length}
           </button>
           <button
-            className={filter === 'open' ? 'segment active' : 'segment'}
-            onClick={() => setFilter('open')}
+            className={filter === 'week' ? 'segment active' : 'segment'}
+            onClick={() => setFilter('week')}
           >
-            未完成 {openTasks.length}
+            一周内 {groups.week.length}
+          </button>
+          <button
+            className={filter === 'future' ? 'segment active' : 'segment'}
+            onClick={() => setFilter('future')}
+          >
+            未来 {groups.future.length}
           </button>
           <button
             className={filter === 'done' ? 'segment active' : 'segment'}
@@ -51,35 +91,32 @@ export function TasksView(): React.JSX.Element {
         </button>
       </div>
 
-      {nothing && (
+      {visible.length === 0 ? (
         <div className="card panel empty-state large">
           <span className="empty-icon">
-            <Icon name="tasks" size={24} />
+            <Icon name={filter === 'done' ? 'check' : 'tasks'} size={24} />
           </span>
           <div>
-            <strong>{filter === 'done' ? '还没有已完成的待办' : '还没有待办'}</strong>
-            <p>新建一条带日期、时间、地点的待办或项目计划。</p>
+            <strong>{EMPTY_COPY[filter].title}</strong>
+            <p>{EMPTY_COPY[filter].hint}</p>
           </div>
-          <button className="primary-button" onClick={() => setCreating(true)}>
-            <Icon name="plus" size={16} />
-            新建待办
-          </button>
+          {filter !== 'done' && (
+            <button className="primary-button" onClick={() => setCreating(true)}>
+              <Icon name="plus" size={16} />
+              新建待办
+            </button>
+          )}
         </div>
-      )}
-
-      {showOpen && openTasks.length > 0 && (
-        <ul className="task-list">
-          {openTasks.map((task) => (
-            <TaskRow key={task.id} task={task} />
-          ))}
-        </ul>
-      )}
-
-      {showDone && doneTasks.length > 0 && (
+      ) : (
         <div className="task-section">
-          <div className="task-section-title">已完成</div>
+          <div className="task-section-title">
+            {filter === 'today' && '今天 · 含逾期'}
+            {filter === 'week' && '未来 7 天'}
+            {filter === 'future' && '未来与未安排'}
+            {filter === 'done' && '已完成'}
+          </div>
           <ul className="task-list">
-            {doneTasks.map((task) => (
+            {visible.map((task) => (
               <TaskRow key={task.id} task={task} />
             ))}
           </ul>

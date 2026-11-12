@@ -11,8 +11,26 @@ function formatUpdated(timestamp: number): string {
   }).format(new Date(timestamp))
 }
 
+function formatCaptureTime(timestamp: number): string {
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).format(new Date(timestamp))
+}
+
 export function NotesView(): React.JSX.Element {
-  const { notes, tasks, createNote, updateNote, deleteNote } = useWorkspace()
+  const {
+    notes,
+    tasks,
+    captures,
+    createNote,
+    updateNote,
+    deleteNote,
+    deleteCapture
+  } = useWorkspace()
+  const [tab, setTab] = useState<'notes' | 'captures'>('notes')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [title, setTitle] = useState('')
@@ -100,9 +118,44 @@ export function NotesView(): React.JSX.Element {
     setSelectedId(next?.id ?? null)
   }
 
+  const sortedCaptures = [...captures].sort((a, b) => b.createdAt - a.createdAt)
+
+  async function removeCapture(id: string): Promise<void> {
+    if (!window.confirm('确定删除这条速记吗？')) return
+    await deleteCapture(id)
+  }
+
   return (
-    <div className="notes-layout">
-      <aside className="card panel notes-sidebar">
+    <div className="notes-page">
+      <div className="notes-tabs">
+        <div className="segmented">
+          <button
+            className={tab === 'notes' ? 'segment active' : 'segment'}
+            onClick={() => setTab('notes')}
+          >
+            想法笔记 {notes.length}
+          </button>
+          <button
+            className={tab === 'captures' ? 'segment active' : 'segment'}
+            onClick={() => setTab('captures')}
+          >
+            速记 {captures.length}
+          </button>
+        </div>
+        {tab === 'captures' && (
+          <button
+            className="primary-button"
+            onClick={() => window.api.openQuickCapture()}
+          >
+            <Icon name="plus" size={16} />
+            快速记录
+          </button>
+        )}
+      </div>
+
+      {tab === 'notes' ? (
+        <div className="notes-layout">
+          <aside className="card panel notes-sidebar">
         <form
           className="notes-search"
           onSubmit={(event) => event.preventDefault()}
@@ -228,6 +281,43 @@ export function NotesView(): React.JSX.Element {
             新建笔记
           </button>
         </section>
+      )}
+        </div>
+      ) : (
+        <div className="captures-layout card panel">
+          {sortedCaptures.length === 0 ? (
+            <div className="empty-state compact">
+              <span className="empty-icon">
+                <Icon name="spark" size={22} />
+              </span>
+              <div>
+                <strong>还没有速记</strong>
+                <p>按 Ctrl + Alt + Space 随手记下想法、待办或灵感。</p>
+              </div>
+            </div>
+          ) : (
+            <ul className="capture-list">
+              {sortedCaptures.map((item) => (
+                <li className="capture-item" key={item.id}>
+                  <span className="capture-dot" />
+                  <div className="capture-body">
+                    <p className="capture-text">{item.text}</p>
+                    <span className="capture-time">
+                      {formatCaptureTime(item.createdAt)}
+                    </span>
+                  </div>
+                  <button
+                    className="icon-button tiny"
+                    title="删除速记"
+                    onClick={() => void removeCapture(item.id)}
+                  >
+                    <Icon name="trash" size={14} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </div>
   )
