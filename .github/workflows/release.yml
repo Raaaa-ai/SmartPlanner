@@ -23,6 +23,25 @@ jobs:
 
       - run: npm run build
 
-      - run: npx electron-builder --win --publish always
+      - name: Build Windows installer
+        run: npx electron-builder --win --publish never
+
+      - name: Publish GitHub release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v$VERSION"
+          test -f dist/latest.yml
+          FILES=(dist/SmartPlanner-Setup-*.exe dist/SmartPlanner-Setup-*.exe.blockmap dist/latest.yml)
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${FILES[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" "${FILES[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$VERSION" \
+              --notes "SmartPlanner $VERSION" \
+              --verify-tag
+          fi
