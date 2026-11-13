@@ -10,10 +10,11 @@ import {
   shell,
   Tray
 } from 'electron'
-import { join, dirname } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import {
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -38,6 +39,7 @@ import {
 import type {
   ActivationResult,
   Anniversary,
+  AnniversaryCalendar,
   AnniversaryInput,
   AnniversaryPatch,
   AnniversaryRepeat,
@@ -83,6 +85,7 @@ import type {
   Weekday,
   WindowCorner
 } from '../shared/types'
+import { isValidLunarParts } from '../shared/lunar'
 
 const APP_ID = 'com.smartplanner.app'
 const QUICK_CAPTURE_SHORTCUT = 'CommandOrControl+Alt+Space'
@@ -232,7 +235,13 @@ function normalizeStore(raw: unknown): StoreData {
         }))
       : [],
     recordCards: Array.isArray(data?.recordCards) ? data.recordCards : [],
-    anniversaries: Array.isArray(data?.anniversaries) ? data.anniversaries : [],
+    anniversaries: Array.isArray(data?.anniversaries)
+      ? data.anniversaries.map((item) => ({
+          ...item,
+          calendar: item.calendar === 'lunar' ? 'lunar' : 'solar',
+          lunarLeap: item.lunarLeap === true
+        }))
+      : [],
     reflections: Array.isArray(data?.reflections) ? data.reflections : [],
     notes: Array.isArray(data?.notes) ? data.notes : [],
     captures: Array.isArray(data?.captures) ? data.captures : [],
@@ -329,18 +338,72 @@ function persistConfig(): void {
   writeJson(configFile, config)
 }
 
+function isPathInside(parent: string, child: string): boolean {
+  const relativePath = relative(resolve(parent), resolve(child))
+  return (
+    relativePath !== '' &&
+    !relativePath.startsWith('..') &&
+    !isAbsolute(relativePath)
+  )
+}
+
+function installDirPath(): string {
+  return dirname(process.execPath)
+}
+
+function isUnsafeDataDir(dir: string): boolean {
+  return isPathInside(installDirPath(), dir)
+}
+
 function preferredDataDir(): string {
   if (process.platform === 'win32') {
     for (const drive of ['D:', 'E:', 'F:']) {
       try {
         if (existsSync(`${drive}\\`)) {
-          return join(`${drive}\\`, 'SmartPlanner', 'data')
+          const candidate = join(`${drive}\\`, 'SmartPlanner_data')
+          if (!isUnsafeDataDir(candidate)) return candidate
         }
       } catch {
       }
     }
   }
   return join(app.getPath('userData'), 'data')
+}
+
+function legacyDataDir(): string | null {
+  if (process.platform !== 'win32') return null
+  for (const drive of ['D:', 'E:', 'F:']) {
+    try {
+      const candidate = join(`${drive}\\`, 'SmartPlanner', 'data')
+      if (existsSync(join(candidate, 'smartplanner.json'))) {
+        return candidate
+      }
+    } catch {
+    }
+  }
+  return null
+}
+
+function copyDirIfMissing(from: string, to: string): void {
+  try {
+    if (from === to || !existsSync(from) || existsSync(to)) return
+    cpSync(from, to, { recursive: true })
+  } catch {
+  }
+}
+
+function migrateData(fromDir: string, toDir: string): void {
+  if (!fromDir || fromDir === toDir) return
+  try {
+    mkdirSync(toDir, { recursive: true })
+    const fromFile = join(fromDir, 'smartplanner.json')
+    const toFile = join(toDir, 'smartplanner.json')
+    if (!existsSync(toFile) && existsSync(fromFile)) {
+      copyFileSync(fromFile, toFile)
+    }
+    copyDirIfMissing(join(fromDir, 'backups'), join(toDir, 'backups'))
+  } catch {
+  }
 }
 
 function initConfig(): void {
@@ -355,27 +418,35 @@ function initStore(): void {
   const configured = typeof config.dataDir === 'string' ? config.dataDir : ''
   const fallbackDir = join(userDataDir, 'data')
   const preferredDir = preferredDataDir()
-  const usePreferred =
-    preferredDir !== fallbackDir && (!configured || configured === fallbackDir)
-  dataDir = usePreferred ? preferredDir : configured || fallbackDir
+  const legacyDir = legacyDataDir()
+
+  let nextDir = configured || fallbackDir
+  if (!configured || configured === fallbackDir) {
+    if (preferredDir !== fallbackDir && !isUnsafeDataDir(preferredDir)) {
+      nextDir = preferredDir
+    }
+  }
+  if (isUnsafeDataDir(nextDir)) {
+    nextDir =
+      preferredDir !== fallbackDir && !isUnsafeDataDir(preferredDir)
+        ? preferredDir
+        : fallbackDir
+  }
+
+  if (nextDir !== configured) {
+    const sourceDir = configured || legacyDir || fallbackDir
+    migrateData(sourceDir, nextDir)
+    config.dataDir = nextDir
+    persistConfig()
+  }
+
+  dataDir = nextDir
 
   try {
     mkdirSync(dataDir, { recursive: true })
   } catch {
     dataDir = fallbackDir
     mkdirSync(dataDir, { recursive: true })
-    config.dataDir = dataDir
-  }
-
-  if (usePreferred) {
-    const target = join(dataDir, 'smartplanner.json')
-    const oldFile = join(fallbackDir, 'smartplanner.json')
-    try {
-      if (dataDir !== fallbackDir && !existsSync(target) && existsSync(oldFile)) {
-        copyFileSync(oldFile, target)
-      }
-    } catch {
-    }
     config.dataDir = dataDir
     persistConfig()
   }
@@ -435,6 +506,50 @@ function createBackup(kind: 'auto' | 'manual'): string | null {
 
 function ensureDailyBackup(): void {
   createBackup('auto')
+}
+
+const UPDATE_BACKUP_LIMIT = 3
+let lastUpdateBackupAt = 0
+
+function pruneUpdateBackups(dir: string): void {
+  try {
+    const files = readdirSync(dir)
+      .filter(
+        (name) =>
+          name.startsWith('smartplanner-before-update-') &&
+          name.endsWith('.json')
+      )
+      .map((name) => ({
+        name,
+        mtime: statSync(join(dir, name)).mtimeMs
+      }))
+      .sort((a, b) => a.mtime - b.mtime)
+
+    while (files.length > UPDATE_BACKUP_LIMIT) {
+      const oldest = files.shift()
+      if (oldest) unlinkSync(join(dir, oldest.name))
+    }
+  } catch {
+  }
+}
+
+function createUpdateBackup(): void {
+  const now = Date.now()
+  if (now - lastUpdateBackupAt < 5000) return
+  lastUpdateBackupAt = now
+
+  try {
+    persistStore()
+    if (!existsSync(dataFile)) return
+    const dir = join(app.getPath('documents'), 'SmartPlannerBackups')
+    mkdirSync(dir, { recursive: true })
+    const name = `smartplanner-before-update-${new Date()
+      .toISOString()
+      .replace(/[:.]/g, '-')}.json`
+    copyFileSync(dataFile, join(dir, name))
+    pruneUpdateBackups(dir)
+  } catch {
+  }
 }
 
 function applyWindowSettings(win: BrowserWindow): void {
@@ -1141,6 +1256,17 @@ function cleanupStore(kind: CleanupKind): number {
   return removed
 }
 
+function isValidAnniversaryDate(
+  date: string,
+  calendar: AnniversaryCalendar,
+  lunarLeap: boolean
+): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false
+  if (calendar !== 'lunar') return true
+  const [year, month, day] = date.split('-').map(Number)
+  return isValidLunarParts({ year, month, day, leap: lunarLeap })
+}
+
 function registerIpc(): void {
   ipcMain.handle('data:snapshot', () => snapshot())
 
@@ -1401,15 +1527,20 @@ function registerIpc(): void {
 
   ipcMain.handle('anniversary:create', (_event, raw: AnniversaryInput) => {
     if (!raw || typeof raw.title !== 'string' || !raw.title.trim()) return null
-    if (typeof raw.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(raw.date)) {
-      return null
-    }
+    if (typeof raw.date !== 'string') return null
+
+    const calendar: AnniversaryCalendar =
+      raw.calendar === 'lunar' ? 'lunar' : 'solar'
+    const lunarLeap = calendar === 'lunar' && raw.lunarLeap === true
+    if (!isValidAnniversaryDate(raw.date, calendar, lunarLeap)) return null
 
     const now = Date.now()
     const anniversary: Anniversary = {
       id: randomUUID(),
       title: raw.title.trim().slice(0, 120),
       date: raw.date,
+      calendar,
+      lunarLeap,
       repeat: raw.repeat === 'once' ? 'once' : 'yearly',
       note: typeof raw.note === 'string' ? raw.note.slice(0, 2000) : '',
       color:
@@ -1429,12 +1560,28 @@ function registerIpc(): void {
     const anniversary = store.anniversaries.find((item) => item.id === id)
     if (!anniversary || !patch || typeof patch !== 'object') return null
 
+    const calendar: AnniversaryCalendar =
+      patch.calendar === 'lunar'
+        ? 'lunar'
+        : patch.calendar === 'solar'
+          ? 'solar'
+          : anniversary.calendar
+    const lunarLeap =
+      calendar === 'lunar'
+        ? patch.lunarLeap !== undefined
+          ? patch.lunarLeap === true
+          : anniversary.lunarLeap
+        : false
+    const date =
+      typeof patch.date === 'string' ? patch.date : anniversary.date
+    if (!isValidAnniversaryDate(date, calendar, lunarLeap)) return null
+
     if (typeof patch.title === 'string' && patch.title.trim()) {
       anniversary.title = patch.title.trim().slice(0, 120)
     }
-    if (typeof patch.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(patch.date)) {
-      anniversary.date = patch.date
-    }
+    anniversary.date = date
+    anniversary.calendar = calendar
+    anniversary.lunarLeap = lunarLeap
     if (patch.repeat === 'yearly' || patch.repeat === 'once') {
       anniversary.repeat = patch.repeat as AnniversaryRepeat
     }
@@ -2020,7 +2167,10 @@ function registerIpc(): void {
 
   ipcMain.handle('update:check', () => checkForUpdates())
   ipcMain.handle('update:status', () => currentUpdateStatus())
-  ipcMain.on('update:install', () => installUpdate())
+  ipcMain.on('update:install', () => {
+    createUpdateBackup()
+    installUpdate()
+  })
 
   ipcMain.on('window:edge', (_event, action: unknown) => {
     if (action === 'show') {
@@ -2146,7 +2296,7 @@ function startApp(): void {
   ensureDailyBackup()
   registerIpc()
   createTray()
-  initUpdater(() => mainWindow)
+  initUpdater(() => mainWindow, () => createUpdateBackup())
   mainWindow = createMainWindow()
 
   if (activationWindow && !activationWindow.isDestroyed()) {

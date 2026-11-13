@@ -24,7 +24,10 @@ export function currentUpdateStatus(): UpdateStatus {
   return status
 }
 
-export function initUpdater(getter: WindowGetter): void {
+export function initUpdater(
+  getter: WindowGetter,
+  onUpdateDownloaded?: () => void
+): void {
   if (initialized) return
   initialized = true
   getWindow = getter
@@ -53,6 +56,10 @@ export function initUpdater(getter: WindowGetter): void {
   })
 
   autoUpdater.on('update-downloaded', (info) => {
+    try {
+      onUpdateDownloaded?.()
+    } catch {
+    }
     setStatus({
       state: 'downloaded',
       version: info.version,

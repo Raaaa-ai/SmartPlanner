@@ -6,19 +6,11 @@ import type {
   CheckinRecord
 } from '../../../shared/types'
 import { Icon } from '../components/Icon'
+import { COLOR_PALETTE } from '../lib/colors'
 import { addDaysISO, parseISODate, toISODate, todayISO } from '../lib/date'
 import { useWorkspace } from '../state/WorkspaceContext'
 
-const CHECKIN_COLORS = [
-  '#3f5d4e',
-  '#2f3e5c',
-  '#8a6a3f',
-  '#9a4a35',
-  '#6b5b7a',
-  '#3c6e71',
-  '#a37b5c',
-  '#4a5568'
-]
+const CHECKIN_COLORS = COLOR_PALETTE
 
 const PERIOD_LABEL: Record<CheckinPeriod, string> = {
   week: '本周',

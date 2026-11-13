@@ -15,6 +15,8 @@ export type EdgeSide = 'left' | 'right'
 
 export type AnniversaryRepeat = 'yearly' | 'once'
 
+export type AnniversaryCalendar = 'solar' | 'lunar'
+
 export type Weekday = 1 | 2 | 3 | 4 | 5 | 6 | 7
 
 export type CoursePlanStatus = 'considering' | 'selected' | 'dropped'
@@ -121,6 +123,8 @@ export interface Anniversary {
   id: string
   title: string
   date: string
+  calendar: AnniversaryCalendar
+  lunarLeap: boolean
   repeat: AnniversaryRepeat
   note: string
   color: string
@@ -131,6 +135,8 @@ export interface Anniversary {
 export interface AnniversaryInput {
   title: string
   date: string
+  calendar?: AnniversaryCalendar
+  lunarLeap?: boolean
   repeat?: AnniversaryRepeat
   note?: string
   color?: string

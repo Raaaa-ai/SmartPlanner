@@ -9,6 +9,7 @@ import type {
   Weekday
 } from '../../../shared/types'
 import { Icon } from '../components/Icon'
+import { COLOR_PALETTE } from '../lib/colors'
 import { useWorkspace } from '../state/WorkspaceContext'
 
 const WEEKDAYS: { value: Weekday; label: string; short: string }[] = [
@@ -21,16 +22,7 @@ const WEEKDAYS: { value: Weekday; label: string; short: string }[] = [
   { value: 7, label: '周日', short: '日' }
 ]
 
-const COURSE_COLORS = [
-  '#3f5d4e',
-  '#2f3e5c',
-  '#8a6a3f',
-  '#9a4a35',
-  '#6b5b7a',
-  '#3c6e71',
-  '#a37b5c',
-  '#4a5568'
-]
+const COURSE_COLORS = COLOR_PALETTE
 
 const PLAN_STATUS_LABEL: Record<CoursePlanStatus, string> = {
   considering: '考虑中',
@@ -48,12 +40,19 @@ const SEMESTER_HINT: Record<CourseSemester, string> = {
   spring: '2 月 - 7 月'
 }
 
-const ROW_MINUTES = 30
-const ROW_HEIGHT = 28
+const MINUTE_HEIGHT = 1.1
+const EMPTY_GAP_HEIGHT = 10
+const MIN_COURSE_SLOT_HEIGHT = 36
 
 function toMinutes(time: string): number {
   const [hour, minute] = time.split(':').map(Number)
   return (hour || 0) * 60 + (minute || 0)
+}
+
+function minuteLabel(minute: number): string {
+  return `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(
+    minute % 60
+  ).padStart(2, '0')}`
 }
 
 function weekdayNumber(): Weekday {
@@ -134,6 +133,7 @@ function CourseEditorModal({
   const {
     createCourse,
     updateCourse,
+    deleteCourse,
     createCoursePlan,
     updateCoursePlan
   } = useWorkspace()
@@ -158,6 +158,13 @@ function CourseEditorModal({
   const [saving, setSaving] = useState(false)
 
   const invalidTime = !startTime || !endTime || startTime >= endTime
+
+  async function handleDelete(): Promise<void> {
+    if (!course) return
+    if (!window.confirm(`确定删除课程「${course.name}」吗？`)) return
+    await deleteCourse(course.id)
+    onClose()
+  }
 
   async function handleSubmit(event: React.FormEvent): Promise<void> {
     event.preventDefault()
@@ -375,6 +382,16 @@ function CourseEditorModal({
         </div>
 
         <div className="modal-actions">
+          {mode === 'course' && course && (
+            <button
+              type="button"
+              className="ghost-button danger-text delete-action"
+              onClick={() => void handleDelete()}
+            >
+              <Icon name="trash" size={15} />
+              删除课程
+            </button>
+          )}
           <button type="button" className="ghost-button" onClick={onClose}>
             取消
           </button>
@@ -427,21 +444,89 @@ export function CoursesView(): React.JSX.Element {
   )
 
   const grid = useMemo(() => {
+    if (courses.length === 0) {
+      return {
+        boundaries: [] as number[],
+        slotStarts: [] as number[],
+        bodyHeight: 0,
+        timeLabels: [] as { minute: number; top: number }[],
+        minuteToTop: new Map<number, number>()
+      }
+    }
+
     const starts = courses.map((course) => toMinutes(course.startTime))
     const ends = courses.map((course) => toMinutes(course.endTime))
-    const min = Math.max(0, Math.floor((starts.length ? Math.min(...starts) : 480) / 60) * 60)
-    const max = Math.min(24 * 60, Math.ceil((ends.length ? Math.max(...ends) : 1260) / 60) * 60)
-    const startMinute = min
-    const endMinute = Math.max(startMinute + 120, max)
-    const rows = Math.max(4, Math.round((endMinute - startMinute) / ROW_MINUTES))
-    const hours: number[] = []
-    for (let minute = startMinute; minute <= endMinute; minute += 60) {
-      hours.push(minute)
-    }
-    return { startMinute, endMinute, rows, hours }
-  }, [courses])
+    const min = Math.floor(Math.min(...starts) / 60) * 60
+    const max = Math.ceil(Math.max(...ends) / 60) * 60
 
-  const bodyHeight = grid.rows * ROW_HEIGHT
+    const boundarySet = new Set<number>([min, max])
+    for (const course of courses) {
+      boundarySet.add(toMinutes(course.startTime))
+      boundarySet.add(toMinutes(course.endTime))
+    }
+
+    const boundaries = [...boundarySet].sort((a, b) => a - b)
+    const slotHeights: number[] = []
+
+    for (let index = 0; index < boundaries.length - 1; index += 1) {
+      const start = boundaries[index]
+      const end = boundaries[index + 1]
+      const hasCourse = courses.some((course) => {
+        const courseStart = toMinutes(course.startTime)
+        const courseEnd = toMinutes(course.endTime)
+        return courseStart < end && courseEnd > start
+      })
+      slotHeights.push(
+        hasCourse
+          ? Math.max(
+              MIN_COURSE_SLOT_HEIGHT,
+              (end - start) * MINUTE_HEIGHT
+            )
+          : EMPTY_GAP_HEIGHT
+      )
+    }
+
+    const slotStarts: number[] = []
+    let total = 0
+    for (const height of slotHeights) {
+      slotStarts.push(total)
+      total += height
+    }
+    slotStarts.push(total)
+
+    const timeLabels: { minute: number; top: number }[] = []
+    let lastTop = -Infinity
+    boundaries.forEach((minute, index) => {
+      if (index === boundaries.length - 1) return
+      const top = slotStarts[index]
+      if (
+        slotHeights[index] > EMPTY_GAP_HEIGHT &&
+        (timeLabels.length === 0 || top - lastTop >= 18)
+      ) {
+        timeLabels.push({ minute, top })
+        lastTop = top
+      }
+    })
+    if (timeLabels.length === 0 || total - lastTop >= 18) {
+      timeLabels.push({
+        minute: boundaries[boundaries.length - 1],
+        top: total
+      })
+    }
+
+    const minuteToTop = new Map<number, number>()
+    boundaries.forEach((minute, index) => {
+      minuteToTop.set(minute, slotStarts[index])
+    })
+
+    return {
+      boundaries,
+      slotStarts,
+      bodyHeight: total,
+      timeLabels,
+      minuteToTop
+    }
+  }, [courses])
 
   function removeCourse(course: Course): void {
     if (!window.confirm(`确定删除课程「${course.name}」吗？`)) return
@@ -603,27 +688,40 @@ export function CoursesView(): React.JSX.Element {
                 <div className="timetable-scroll">
                   <div
                     className="timetable-body"
-                    style={{ height: bodyHeight }}
+                    style={{ height: grid.bodyHeight }}
                   >
                     <div className="timetable-times">
-                      {grid.hours.map((minute) => (
+                      {grid.timeLabels.map((label, index) => (
                         <span
-                          key={minute}
+                          key={`${label.minute}-${index}`}
                           style={{
-                            top: ((minute - grid.startMinute) / ROW_MINUTES) * ROW_HEIGHT
+                            top: label.top,
+                            transform:
+                              index === 0
+                                ? 'translateY(0)'
+                                : label.top >= grid.bodyHeight - 1
+                                  ? 'translateY(-100%)'
+                                  : 'translateY(-50%)'
                           }}
                         >
-                          {String(Math.floor(minute / 60)).padStart(2, '0')}:00
+                          {minuteLabel(label.minute)}
                         </span>
                       ))}
                     </div>
 
-                    <div
-                      className="timetable-grid"
-                      style={{
-                        backgroundImage: `repeating-linear-gradient(to bottom, transparent 0, transparent ${ROW_HEIGHT * 2 - 1}px, #eef0f4 ${ROW_HEIGHT * 2 - 1}px, #eef0f4 ${ROW_HEIGHT * 2}px)`
-                      }}
-                    >
+                    <div className="timetable-grid">
+                      {grid.boundaries.map((minute, index) => (
+                        <div
+                          key={`line-${minute}-${index}`}
+                          className={
+                            minute % 60 === 0
+                              ? 'timetable-line hour'
+                              : 'timetable-line'
+                          }
+                          style={{ top: grid.slotStarts[index] }}
+                        />
+                      ))}
+
                       {WEEKDAYS.map((item, index) => (
                         <div
                           key={item.value}
@@ -641,18 +739,22 @@ export function CoursesView(): React.JSX.Element {
 
                       {courses.map((course) => {
                         const top =
-                          ((toMinutes(course.startTime) - grid.startMinute) /
-                            ROW_MINUTES) *
-                          ROW_HEIGHT
+                          grid.minuteToTop.get(toMinutes(course.startTime)) ??
+                          0
+                        const bottom =
+                          grid.minuteToTop.get(toMinutes(course.endTime)) ??
+                          top
                         const height = Math.max(
-                          ROW_HEIGHT,
-                          ((toMinutes(course.endTime) -
-                            toMinutes(course.startTime)) /
-                            ROW_MINUTES) *
-                            ROW_HEIGHT -
-                            4
+                          MIN_COURSE_SLOT_HEIGHT - 4,
+                          bottom - top - 4
                         )
-                        const compact = height < 52
+                        const compact = height < 70
+                        const nameClass =
+                          course.name.length > 20
+                            ? 'timetable-course-name xlong'
+                            : course.name.length > 12
+                              ? 'timetable-course-name long'
+                              : 'timetable-course-name'
                         return (
                           <button
                             key={course.id}
@@ -674,7 +776,7 @@ export function CoursesView(): React.JSX.Element {
                             title={`${course.name} ${course.startTime}-${course.endTime}${course.location ? ` · ${course.location}` : ''}`}
                           >
                             <span className="timetable-course-inner">
-                              <span className="timetable-course-name">
+                              <span className={nameClass}>
                                 {course.name}
                                 {conflicts.has(course.id) && (
                                   <i className="course-conflict">冲突</i>

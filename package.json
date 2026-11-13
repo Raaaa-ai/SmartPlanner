@@ -1,6 +1,6 @@
 {
   "name": "smartplanner",
-  "version": "0.4.1",
+  "version": "0.5.1",
   "description": "本地优先的个人工作台",
   "main": "./out/main/index.js",
   "author": "SmartPlanner",
@@ -20,6 +20,7 @@
     "@fontsource-variable/noto-sans-sc": "^5.3.1",
     "@fontsource-variable/noto-serif-sc": "^5.3.1",
     "electron-updater": "^6.8.11",
+    "lunar-typescript": "^1.8.7",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },

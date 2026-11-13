@@ -1,5 +1,17 @@
 import type { Anniversary } from '../../../shared/types'
-import { parseISODate, toISODate, todayISO } from './date'
+import {
+  lunarPartsLabel,
+  lunarPartsToSolar,
+  nextLunarOccurrence,
+  parseLunarDate
+} from '../../../shared/lunar'
+import {
+  formatDayDate,
+  formatFullDate,
+  parseISODate,
+  toISODate,
+  todayISO
+} from './date'
 
 export interface AnniversaryCountdown {
   nextDate: string
@@ -17,6 +29,18 @@ export function nextOccurrence(
   anniversary: Anniversary,
   today = todayISO()
 ): string {
+  if (anniversary.calendar === 'lunar') {
+    if (anniversary.repeat === 'once') {
+      const parts = parseLunarDate(anniversary.date, anniversary.lunarLeap)
+      return (parts && lunarPartsToSolar(parts)) || anniversary.date
+    }
+    return nextLunarOccurrence(
+      anniversary.date,
+      anniversary.lunarLeap,
+      today
+    )
+  }
+
   if (anniversary.repeat === 'once') return anniversary.date
 
   const base = parseISODate(anniversary.date)
@@ -28,6 +52,19 @@ export function nextOccurrence(
     candidate = new Date(year, base.getMonth(), base.getDate())
   }
   return toISODate(candidate)
+}
+
+export function anniversaryDateLabel(
+  anniversary: Anniversary,
+  includeYear = false
+): string {
+  if (anniversary.calendar === 'lunar') {
+    const parts = parseLunarDate(anniversary.date, anniversary.lunarLeap)
+    return parts ? lunarPartsLabel(parts, includeYear) : '农历日期'
+  }
+  return includeYear
+    ? formatFullDate(anniversary.date)
+    : formatDayDate(anniversary.date)
 }
 
 export function countdownFor(

@@ -3,6 +3,7 @@ import type { Project, ProjectInput, ProjectStatus, ProgressEntry } from '../../
 import { Icon } from '../components/Icon'
 import { TaskModal } from '../components/TaskModal'
 import { TaskRow } from '../components/TaskRow'
+import { COLOR_PALETTE } from '../lib/colors'
 import { formatDayDate, todayISO } from '../lib/date'
 import { sortDoneTasks, sortOpenTasks } from '../lib/tasks'
 import { useWorkspace } from '../state/WorkspaceContext'
@@ -13,16 +14,7 @@ const STATUS_LABEL: Record<ProjectStatus, string> = {
   done: '已完成'
 }
 
-const PROJECT_COLORS = [
-  '#8a6a3f',
-  '#3f5d4e',
-  '#2f3e5c',
-  '#9a4a35',
-  '#6b5b7a',
-  '#3c6e71',
-  '#a37b5c',
-  '#4a4a4a'
-]
+const PROJECT_COLORS = COLOR_PALETTE
 
 function entriesOf(projectId: string, progress: ProgressEntry[]): ProgressEntry[] {
   return progress

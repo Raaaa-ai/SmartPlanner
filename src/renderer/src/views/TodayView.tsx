@@ -2,9 +2,12 @@ import { useState } from 'react'
 import { Icon, type IconName } from '../components/Icon'
 import { TaskModal } from '../components/TaskModal'
 import { TaskRow } from '../components/TaskRow'
-import { countdownFor, sortByCountdown } from '../lib/anniversaries'
 import {
-  formatDayDate,
+  anniversaryDateLabel,
+  countdownFor,
+  sortByCountdown
+} from '../lib/anniversaries'
+import {
   formatFullDate,
   formatTime,
   todayISO,
@@ -28,8 +31,12 @@ export function TodayView(): React.JSX.Element {
     tasks,
     captures,
     anniversaries,
+    courses,
+    checkins,
+    checkinRecords,
     createTask,
-    deleteCapture
+    deleteCapture,
+    toggleCheckin
   } = useWorkspace()
   const today = todayISO()
   const upcomingAnniversaries = sortByCountdown(anniversaries, today).slice(0, 3)
@@ -41,6 +48,22 @@ export function TodayView(): React.JSX.Element {
     .sort((a, b) => b.createdAt - a.createdAt)
   const activeProjects = projects.filter((project) => project.status === 'active')
   const projectById = new Map(projects.map((project) => [project.id, project]))
+
+  const weekday = new Date().getDay() === 0 ? 7 : new Date().getDay()
+  const todaysCourses = courses
+    .filter((course) => course.weekday === weekday)
+    .sort((a, b) => a.startTime.localeCompare(b.startTime))
+  const todaysCheckins = [...checkins].sort((a, b) => a.createdAt - b.createdAt)
+  const checkedToday = new Set(
+    checkinRecords
+      .filter((record) => record.date === today)
+      .map((record) => record.checkinId)
+  )
+  const checkinPeriodLabel: Record<string, string> = {
+    week: '本周',
+    month: '本月',
+    year: '今年'
+  }
 
   const [newTask, setNewTask] = useState('')
   const [tomorrowModal, setTomorrowModal] = useState(false)
@@ -211,6 +234,98 @@ export function TodayView(): React.JSX.Element {
         <div className="stack">
         <section className="card panel">
           <div className="panel-head">
+            <h3>今日课表</h3>
+            <span className="muted">{todaysCourses.length} 节</span>
+          </div>
+          {todaysCourses.length === 0 ? (
+            <div className="empty-state compact">
+              <span className="empty-icon">
+                <Icon name="book" size={22} />
+              </span>
+              <div>
+                <strong>今天没有课程</strong>
+                <p>可以去「课程表」安排本周的课程。</p>
+              </div>
+            </div>
+          ) : (
+            <ul className="feed">
+              {todaysCourses.map((course) => (
+                <li key={course.id} className="feed-item">
+                  <span
+                    className="feed-dot"
+                    style={{ background: course.color }}
+                  />
+                  <div className="feed-body">
+                    <div className="feed-title">{course.name}</div>
+                    <div className="feed-text">
+                      {course.startTime} - {course.endTime}
+                      {course.location ? ` · ${course.location}` : ''}
+                    </div>
+                  </div>
+                  {course.weeks && (
+                    <span className="percent-badge">{course.weeks}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className="card panel">
+          <div className="panel-head">
+            <h3>今日打卡</h3>
+            <span className="muted">
+              {checkedToday.size}/{todaysCheckins.length} 已完成
+            </span>
+          </div>
+          {todaysCheckins.length === 0 ? (
+            <div className="empty-state compact">
+              <span className="empty-icon">
+                <Icon name="flame" size={22} />
+              </span>
+              <div>
+                <strong>还没有打卡目标</strong>
+                <p>去「打卡」设置目标，每天来打卡。</p>
+              </div>
+            </div>
+          ) : (
+            <ul className="feed">
+              {todaysCheckins.map((item) => {
+                const done = checkedToday.has(item.id)
+                return (
+                  <li key={item.id} className="feed-item">
+                    <span
+                      className="feed-dot"
+                      style={{ background: item.color }}
+                    />
+                    <div className="feed-body">
+                      <div className="feed-title">{item.name}</div>
+                      <div className="feed-text">
+                        {done
+                          ? '今天已打卡'
+                          : `${checkinPeriodLabel[item.period]}目标 ${item.targetDays} 天`}
+                      </div>
+                    </div>
+                    <button
+                      className={
+                        done
+                          ? 'today-checkin-button done'
+                          : 'today-checkin-button'
+                      }
+                      onClick={() => void toggleCheckin(item.id, today)}
+                    >
+                      <Icon name={done ? 'check' : 'flame'} size={14} />
+                      {done ? '已打卡' : '打卡'}
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </section>
+
+        <section className="card panel">
+          <div className="panel-head">
             <h3>最近速记</h3>
             <span className="muted">{captures.length} 条</span>
           </div>
@@ -277,7 +392,7 @@ export function TodayView(): React.JSX.Element {
                     <div className="feed-body">
                       <div className="feed-title">{item.title}</div>
                       <div className="feed-text">
-                        {formatDayDate(item.date)}
+                        {anniversaryDateLabel(item)}
                       </div>
                     </div>
                     <span className="percent-badge">{countdown.label}</span>

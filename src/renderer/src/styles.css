@@ -4389,6 +4389,19 @@ body.edge-mode #root {
   border-left: 1px solid var(--border);
 }
 
+.timetable-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: #eef0f4;
+  pointer-events: none;
+}
+
+.timetable-line.hour {
+  background: #e2e7ef;
+}
+
 .timetable-col {
   position: absolute;
   top: 0;
@@ -4438,15 +4451,21 @@ body.edge-mode #root {
 }
 
 .timetable-course-name {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  overflow: hidden;
+  display: block;
+  overflow-wrap: anywhere;
   font-size: 12px;
   font-weight: 650;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.25;
+  white-space: normal;
+}
+
+.timetable-course-name.long {
+  font-size: 11px;
+}
+
+.timetable-course-name.xlong {
+  font-size: 10px;
+  line-height: 1.2;
 }
 
 .timetable-course-time,
@@ -4460,7 +4479,8 @@ body.edge-mode #root {
 }
 
 .course-conflict {
-  flex: 0 0 auto;
+  display: inline-block;
+  margin-left: 4px;
   padding: 0 4px;
   border-radius: 4px;
   background: #fef2f2;
@@ -4468,6 +4488,7 @@ body.edge-mode #root {
   font-size: 9px;
   font-style: normal;
   font-weight: 700;
+  vertical-align: middle;
 }
 
 .course-modal {
@@ -4849,4 +4870,67 @@ body.edge-mode #root {
 
 .settings-control .machine-code {
   max-width: 300px;
+}
+
+/* ---------- v0.5.1 ---------- */
+
+.modal-actions .delete-action {
+  margin-right: auto;
+}
+
+.anniversary-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.lunar-date-row {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.lunar-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  font-size: 12px;
+}
+
+.checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #4b5563;
+  font-size: 13px;
+}
+
+.checkbox-label input {
+  accent-color: var(--accent);
+}
+
+.today-checkin-button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  border: 1px solid var(--accent-line);
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: default;
+  transition: background 0.13s ease, color 0.13s ease;
+}
+
+.today-checkin-button:hover {
+  background: color-mix(in srgb, var(--accent) 14%, #ffffff);
+}
+
+.today-checkin-button.done {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
 }
