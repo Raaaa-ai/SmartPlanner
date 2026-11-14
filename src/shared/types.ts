@@ -13,6 +13,8 @@ export type CloseAction = 'ask' | 'tray' | 'quit'
 
 export type StickyModule = 'tasks' | 'projects' | 'checkin' | 'courses'
 
+export type StickyLayer = 'top' | 'bottom'
+
 export type AnniversaryRepeat = 'yearly' | 'once'
 
 export type AnniversaryCalendar = 'solar' | 'lunar'
@@ -335,6 +337,7 @@ export interface Settings {
   windowCorner: WindowCorner
   sidebarCollapsed: boolean
   stickyModules: StickyModule[]
+  stickyLayer: StickyLayer
   autoCheckUpdate: boolean
   dataDir: string
 }
@@ -353,6 +356,7 @@ export type SettingsPatch = Partial<
     | 'windowCorner'
     | 'sidebarCollapsed'
     | 'stickyModules'
+    | 'stickyLayer'
     | 'autoCheckUpdate'
   >
 >
@@ -457,7 +461,7 @@ export interface SmartPlannerApi {
   copyText: (text: string) => Promise<void>
   openSticky: () => void
   closeSticky: () => void
-  openMain: () => void
+  openMain: (module?: string) => void
   onDataChanged: (callback: () => void) => () => void
   updateSettings: (patch: SettingsPatch) => Promise<Settings>
   chooseDataDir: () => Promise<Snapshot | null>

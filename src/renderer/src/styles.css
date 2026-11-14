@@ -5568,3 +5568,122 @@ body.sticky-mode #root {
   min-width: 58px;
   text-align: right;
 }
+
+.sticky-icon.active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.sticky-row-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 1px;
+  opacity: 0.3;
+  transition: opacity 0.13s ease;
+}
+
+.sticky-row-actions .sticky-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.sticky-task:hover .sticky-row-actions,
+.sticky-project:hover .sticky-row-actions,
+.sticky-checkin:hover .sticky-row-actions,
+.sticky-course:hover .sticky-row-actions {
+  opacity: 1;
+}
+
+.sticky-add-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding: 5px 8px;
+  border: 1px dashed rgba(203, 213, 225, 0.95);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.42);
+  color: #9aa2b1;
+  transition: border-color 0.13s ease, background 0.13s ease, box-shadow 0.13s ease;
+}
+
+.sticky-add-form:focus-within {
+  border-color: var(--accent-line);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--accent);
+}
+
+.sticky-add-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: #1f2937;
+  font-size: 11.5px;
+}
+
+.sticky-add-input::placeholder {
+  color: #9aa2b1;
+}
+
+.sticky-add-submit {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: none;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 12%, #ffffff);
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 650;
+  cursor: default;
+  transition: background 0.13s ease;
+}
+
+.sticky-add-submit:hover {
+  background: color-mix(in srgb, var(--accent) 20%, #ffffff);
+}
+
+.sticky-add-submit:disabled {
+  opacity: 0.35;
+}
+
+.sticky-inline-input {
+  width: 100%;
+  min-width: 0;
+  padding: 2px 5px;
+  border: 1px solid var(--accent-line);
+  border-radius: 5px;
+  outline: none;
+  background: #ffffff;
+  color: #1f2937;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sticky-project-head .sticky-inline-input {
+  flex: 1;
+}
+
+.sticky-section-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sticky-section-action {
+  padding: 1px 5px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: default;
+}
+
+.sticky-section-action:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}

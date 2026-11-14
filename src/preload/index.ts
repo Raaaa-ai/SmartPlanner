@@ -151,7 +151,7 @@ const api: SmartPlannerApi = {
     ipcRenderer.send('window:control', action),
   openSticky: (): void => ipcRenderer.send('sticky:open'),
   closeSticky: (): void => ipcRenderer.send('sticky:close'),
-  openMain: (): void => ipcRenderer.send('main:show'),
+  openMain: (module?: string): void => ipcRenderer.send('main:show', module),
   checkForUpdates: (): Promise<UpdateStatus> => ipcRenderer.invoke('update:check'),
   installUpdate: (): void => ipcRenderer.send('update:install'),
   onCapture: (callback) => {

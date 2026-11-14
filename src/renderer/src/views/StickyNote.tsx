@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import type { StickyModule } from '../../../shared/types'
+import type { Checkin, Project, StickyModule, Task } from '../../../shared/types'
 import { Icon, type IconName } from '../components/Icon'
 import { TaskCheckbox } from '../components/TaskCheckbox'
 import { formatDayDate, todayISO } from '../lib/date'
@@ -27,6 +27,8 @@ function weekdayNumber(): number {
   return day === 0 ? 7 : day
 }
 
+type EditTarget = { type: 'task' | 'project' | 'checkin'; id: string }
+
 export function StickyNote(): React.JSX.Element {
   const {
     settings,
@@ -36,10 +38,25 @@ export function StickyNote(): React.JSX.Element {
     checkins,
     checkinRecords,
     courses,
+    updateSettings,
+    createTask,
     updateTask,
+    deleteTask,
+    createProject,
+    updateProject,
+    deleteProject,
+    addProgress,
+    createCheckin,
+    updateCheckin,
+    deleteCheckin,
     toggleCheckin
   } = useWorkspace()
   const [active, setActive] = useState<StickyModule>('tasks')
+  const [newTask, setNewTask] = useState('')
+  const [newProject, setNewProject] = useState('')
+  const [newCheckin, setNewCheckin] = useState('')
+  const [editing, setEditing] = useState<EditTarget | null>(null)
+  const [editValue, setEditValue] = useState('')
   const today = todayISO()
   const weekday = weekdayNumber()
 
@@ -89,6 +106,123 @@ export function StickyNote(): React.JSX.Element {
       .slice(0, 8)
   }, [courses, weekday])
 
+  function startEdit(type: EditTarget['type'], id: string, value: string): void {
+    setEditing({ type, id })
+    setEditValue(value)
+  }
+
+  function cancelEdit(): void {
+    setEditing(null)
+    setEditValue('')
+  }
+
+  function saveEdit(): void {
+    if (!editing) return
+    const value = editValue.trim()
+    if (!value) {
+      cancelEdit()
+      return
+    }
+    if (editing.type === 'task') {
+      void updateTask(editing.id, { title: value })
+    } else if (editing.type === 'project') {
+      void updateProject(editing.id, { name: value })
+    } else {
+      void updateCheckin(editing.id, { name: value })
+    }
+    cancelEdit()
+  }
+
+  function handleEditKey(event: React.KeyboardEvent<HTMLInputElement>): void {
+    if (event.key === 'Enter') {
+      saveEdit()
+    } else if (event.key === 'Escape') {
+      cancelEdit()
+    }
+  }
+
+  async function addTask(event: React.FormEvent): Promise<void> {
+    event.preventDefault()
+    const title = newTask.trim()
+    if (!title) return
+    setNewTask('')
+    await createTask({ title })
+  }
+
+  async function addProject(event: React.FormEvent): Promise<void> {
+    event.preventDefault()
+    const name = newProject.trim()
+    if (!name) return
+    setNewProject('')
+    await createProject({ name })
+  }
+
+  async function addCheckin(event: React.FormEvent): Promise<void> {
+    event.preventDefault()
+    const name = newCheckin.trim()
+    if (!name) return
+    setNewCheckin('')
+    await createCheckin({
+      name,
+      targetDays: 20,
+      period: 'month'
+    })
+  }
+
+  function removeTask(task: Task): void {
+    if (!window.confirm(`确定删除待办「${task.title}」吗？`)) return
+    void deleteTask(task.id)
+  }
+
+  function removeProject(project: Project): void {
+    if (!window.confirm(`确定删除项目「${project.name}」吗？`)) return
+    void deleteProject(project.id)
+  }
+
+  function removeCheckin(checkin: Checkin): void {
+    if (!window.confirm(`确定删除打卡「${checkin.name}」吗？`)) return
+    void deleteCheckin(checkin.id)
+  }
+
+  async function addProjectProgress(
+    project: Project,
+    currentPercent: number
+  ): Promise<void> {
+    const content = window.prompt(`记录「${project.name}」的进展`)
+    if (!content?.trim()) return
+    const percentInput = window.prompt(
+      '整体进度（0-100）',
+      String(currentPercent)
+    )
+    if (percentInput === null) return
+    const percent = Math.max(
+      0,
+      Math.min(100, Number(percentInput) || currentPercent)
+    )
+    await addProgress({
+      projectId: project.id,
+      date: today,
+      content: content.trim(),
+      percent
+    })
+  }
+
+  async function editCheckinTarget(checkin: Checkin): Promise<void> {
+    const value = window.prompt(
+      `「${checkin.name}」的目标天数`,
+      String(checkin.targetDays)
+    )
+    if (value === null) return
+    const targetDays = Math.max(1, Math.round(Number(value) || checkin.targetDays))
+    await updateCheckin(checkin.id, { targetDays })
+  }
+
+  function toggleLayer(): void {
+    void updateSettings({
+      stickyLayer: settings.stickyLayer === 'top' ? 'bottom' : 'top'
+    })
+  }
+
   return (
     <div className="sticky-shell">
       <div className="sticky-grabber" />
@@ -106,6 +240,22 @@ export function StickyNote(): React.JSX.Element {
           </span>
         </button>
         <div className="sticky-header-actions">
+          <button
+            type="button"
+            className={
+              settings.stickyLayer === 'top'
+                ? 'sticky-icon active'
+                : 'sticky-icon'
+            }
+            title={
+              settings.stickyLayer === 'top'
+                ? '取消置顶'
+                : '始终置顶'
+            }
+            onClick={toggleLayer}
+          >
+            <Icon name="pin" size={13} />
+          </button>
           <button
             type="button"
             className="sticky-icon"
@@ -168,13 +318,29 @@ export function StickyNote(): React.JSX.Element {
                   <span>待办</span>
                   <span>{openTasks.length}</span>
                 </div>
+                <form className="sticky-add-form" onSubmit={addTask}>
+                  <Icon name="plus" size={13} />
+                  <input
+                    className="sticky-add-input"
+                    value={newTask}
+                    onChange={(event) => setNewTask(event.target.value)}
+                    placeholder="添加待办，回车保存"
+                  />
+                  <button
+                    type="submit"
+                    className="sticky-add-submit"
+                    disabled={!newTask.trim()}
+                  >
+                    添加
+                  </button>
+                </form>
                 {openTasks.length === 0 ? (
                   <div className="sticky-empty">
                     <span className="sticky-empty-icon">
                       <Icon name="check" size={20} />
                     </span>
                     <strong>{MODULE_META.tasks.empty}</strong>
-                    <p>去主界面添加新的待办。</p>
+                    <p>在上方输入框添加一条待办。</p>
                   </div>
                 ) : (
                   openTasks.map((task) => (
@@ -186,7 +352,20 @@ export function StickyNote(): React.JSX.Element {
                         }
                       />
                       <div className="sticky-task-copy">
-                        <span className="sticky-task-title">{task.title}</span>
+                        {editing?.type === 'task' && editing.id === task.id ? (
+                          <input
+                            className="sticky-inline-input"
+                            value={editValue}
+                            onChange={(event) =>
+                              setEditValue(event.target.value)
+                            }
+                            onBlur={saveEdit}
+                            onKeyDown={handleEditKey}
+                            autoFocus
+                          />
+                        ) : (
+                          <span className="sticky-task-title">{task.title}</span>
+                        )}
                         <span className="sticky-task-meta">
                           <span
                             className={
@@ -206,6 +385,26 @@ export function StickyNote(): React.JSX.Element {
                           )}
                         </span>
                       </div>
+                      <div className="sticky-row-actions">
+                        <button
+                          type="button"
+                          className="sticky-icon"
+                          title="编辑待办"
+                          onClick={() =>
+                            startEdit('task', task.id, task.title)
+                          }
+                        >
+                          <Icon name="pen" size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          className="sticky-icon"
+                          title="删除待办"
+                          onClick={() => removeTask(task)}
+                        >
+                          <Icon name="trash" size={12} />
+                        </button>
+                      </div>
                     </div>
                   ))
                 )}
@@ -218,13 +417,29 @@ export function StickyNote(): React.JSX.Element {
                   <span>进行中项目</span>
                   <span>{activeProjects.length}</span>
                 </div>
+                <form className="sticky-add-form" onSubmit={addProject}>
+                  <Icon name="plus" size={13} />
+                  <input
+                    className="sticky-add-input"
+                    value={newProject}
+                    onChange={(event) => setNewProject(event.target.value)}
+                    placeholder="添加项目，回车保存"
+                  />
+                  <button
+                    type="submit"
+                    className="sticky-add-submit"
+                    disabled={!newProject.trim()}
+                  >
+                    添加
+                  </button>
+                </form>
                 {activeProjects.length === 0 ? (
                   <div className="sticky-empty">
                     <span className="sticky-empty-icon">
                       <Icon name="folder" size={20} />
                     </span>
                     <strong>{MODULE_META.projects.empty}</strong>
-                    <p>去主界面创建或恢复一个项目。</p>
+                    <p>在上方输入框添加一个项目。</p>
                   </div>
                 ) : (
                   activeProjects.map(({ project, percent, latest }) => (
@@ -234,12 +449,56 @@ export function StickyNote(): React.JSX.Element {
                           className="sticky-project-color"
                           style={{ background: project.color }}
                         />
-                        <span className="sticky-project-name">
-                          {project.name}
-                        </span>
+                        {editing?.type === 'project' &&
+                        editing.id === project.id ? (
+                          <input
+                            className="sticky-inline-input"
+                            value={editValue}
+                            onChange={(event) =>
+                              setEditValue(event.target.value)
+                            }
+                            onBlur={saveEdit}
+                            onKeyDown={handleEditKey}
+                            autoFocus
+                          />
+                        ) : (
+                          <span className="sticky-project-name">
+                            {project.name}
+                          </span>
+                        )}
                         <span className="sticky-project-percent">
                           {percent}%
                         </span>
+                        <div className="sticky-row-actions">
+                          <button
+                            type="button"
+                            className="sticky-icon"
+                            title="记录进展"
+                            onClick={() =>
+                              void addProjectProgress(project, percent)
+                            }
+                          >
+                            <Icon name="target" size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            className="sticky-icon"
+                            title="编辑项目名"
+                            onClick={() =>
+                              startEdit('project', project.id, project.name)
+                            }
+                          >
+                            <Icon name="pen" size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            className="sticky-icon"
+                            title="删除项目"
+                            onClick={() => removeProject(project)}
+                          >
+                            <Icon name="trash" size={12} />
+                          </button>
+                        </div>
                       </div>
                       <div className="sticky-progress">
                         <span
@@ -266,13 +525,29 @@ export function StickyNote(): React.JSX.Element {
                     {checkedToday.size}/{checkins.length}
                   </span>
                 </div>
+                <form className="sticky-add-form" onSubmit={addCheckin}>
+                  <Icon name="plus" size={13} />
+                  <input
+                    className="sticky-add-input"
+                    value={newCheckin}
+                    onChange={(event) => setNewCheckin(event.target.value)}
+                    placeholder="添加打卡目标，回车保存"
+                  />
+                  <button
+                    type="submit"
+                    className="sticky-add-submit"
+                    disabled={!newCheckin.trim()}
+                  >
+                    添加
+                  </button>
+                </form>
                 {checkins.length === 0 ? (
                   <div className="sticky-empty">
                     <span className="sticky-empty-icon">
                       <Icon name="flame" size={20} />
                     </span>
                     <strong>{MODULE_META.checkin.empty}</strong>
-                    <p>去主界面设置一个目标。</p>
+                    <p>在上方输入框添加一个打卡目标。</p>
                   </div>
                 ) : (
                   checkins.map((item) => {
@@ -284,11 +559,55 @@ export function StickyNote(): React.JSX.Element {
                           style={{ background: item.color }}
                         />
                         <div className="sticky-checkin-copy">
-                          <span className="sticky-task-title">{item.name}</span>
+                          {editing?.type === 'checkin' &&
+                          editing.id === item.id ? (
+                            <input
+                              className="sticky-inline-input"
+                              value={editValue}
+                              onChange={(event) =>
+                                setEditValue(event.target.value)
+                              }
+                              onBlur={saveEdit}
+                              onKeyDown={handleEditKey}
+                              autoFocus
+                            />
+                          ) : (
+                            <span className="sticky-task-title">
+                              {item.name}
+                            </span>
+                          )}
                           <span className="sticky-task-meta">
                             {PERIOD_LABEL[item.period] ?? '本月'}目标{' '}
                             {item.targetDays} 天
                           </span>
+                        </div>
+                        <div className="sticky-row-actions">
+                          <button
+                            type="button"
+                            className="sticky-icon"
+                            title="修改目标天数"
+                            onClick={() => void editCheckinTarget(item)}
+                          >
+                            <Icon name="target" size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            className="sticky-icon"
+                            title="编辑名称"
+                            onClick={() =>
+                              startEdit('checkin', item.id, item.name)
+                            }
+                          >
+                            <Icon name="pen" size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            className="sticky-icon"
+                            title="删除打卡"
+                            onClick={() => removeCheckin(item)}
+                          >
+                            <Icon name="trash" size={12} />
+                          </button>
                         </div>
                         <button
                           type="button"
@@ -313,7 +632,16 @@ export function StickyNote(): React.JSX.Element {
               <section className="sticky-list">
                 <div className="sticky-section-head">
                   <span>今日课程</span>
-                  <span>{todaySlots.length}</span>
+                  <div className="sticky-section-head-actions">
+                    <span>{todaySlots.length}</span>
+                    <button
+                      type="button"
+                      className="sticky-section-action"
+                      onClick={() => window.api.openMain('courses')}
+                    >
+                      管理
+                    </button>
+                  </div>
                 </div>
                 {todaySlots.length === 0 ? (
                   <div className="sticky-empty">
@@ -321,7 +649,14 @@ export function StickyNote(): React.JSX.Element {
                       <Icon name="book" size={20} />
                     </span>
                     <strong>{MODULE_META.courses.empty}</strong>
-                    <p>去「课程表」安排本周课程。</p>
+                    <p>在课程表中安排本周课程。</p>
+                    <button
+                      type="button"
+                      className="sticky-primary"
+                      onClick={() => window.api.openMain('courses')}
+                    >
+                      打开课程表
+                    </button>
                   </div>
                 ) : (
                   todaySlots.map(({ course, slot }, index) => (
@@ -343,6 +678,16 @@ export function StickyNote(): React.JSX.Element {
                           {course.location || course.teacher || '课程'}
                         </span>
                       </div>
+                      <div className="sticky-row-actions">
+                        <button
+                          type="button"
+                          className="sticky-icon"
+                          title="在课程表中编辑"
+                          onClick={() => window.api.openMain('courses')}
+                        >
+                          <Icon name="pen" size={12} />
+                        </button>
+                      </div>
                     </div>
                   ))
                 )}
@@ -354,7 +699,10 @@ export function StickyNote(): React.JSX.Element {
 
       <footer className="sticky-footer">
         <span className="sticky-live-dot" />
-        <span>本地保存 · 与工作台同步 · 始终置顶</span>
+        <span>
+          本地保存 · 与工作台同步 ·{' '}
+          {settings.stickyLayer === 'top' ? '始终置顶' : '不置顶'}
+        </span>
       </footer>
     </div>
   )

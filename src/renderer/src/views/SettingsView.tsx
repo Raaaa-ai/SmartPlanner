@@ -375,9 +375,24 @@ export function SettingsView(): React.JSX.Element {
           <div className="settings-info">
             <strong>便签内容</strong>
             <span>
-              选择要显示在窄便签里的模块。便签始终置顶，与主界面数据实时同步，并跟随外观中的背景模糊与不透明度。
+              选择要显示在窄便签里的模块。便签与主界面数据实时同步，并跟随外观中的背景模糊与不透明度。
             </span>
           </div>
+        </div>
+
+        <div className="settings-row">
+          <div className="settings-info">
+            <strong>始终置顶</strong>
+            <span>
+              开启后便签显示在其他窗口上方；关闭后像普通窗口一样会被其他窗口覆盖。Windows 不支持真正的“始终置底”，但关闭工作台时便签仍会保留。
+            </span>
+          </div>
+          <Switch
+            on={settings.stickyLayer === 'top'}
+            onChange={(value) =>
+              void updateSettings({ stickyLayer: value ? 'top' : 'bottom' })
+            }
+          />
         </div>
 
         {STICKY_MODULE_OPTIONS.map((item) => (

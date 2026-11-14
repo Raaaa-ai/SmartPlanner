@@ -80,6 +80,7 @@ import type {
   Settings,
   SettingsPatch,
   Snapshot,
+  StickyLayer,
   StickyModule,
   Task,
   TaskInput,
@@ -130,6 +131,7 @@ interface AppConfig {
   windowCorner?: WindowCorner
   sidebarCollapsed?: boolean
   stickyModules?: string[]
+  stickyLayer?: StickyLayer
   stickyOpen?: boolean
   autoCheckUpdate?: boolean
   windowBounds?: { x: number; y: number; width: number; height: number }
@@ -401,6 +403,7 @@ function currentSettings(): Settings {
           STICKY_MODULES.includes(module as StickyModule)
         )
       : ['tasks', 'projects'],
+    stickyLayer: config.stickyLayer === 'bottom' ? 'bottom' : 'top',
     autoCheckUpdate: config.autoCheckUpdate !== false,
     dataDir
   }
@@ -908,6 +911,11 @@ function toggleMainWindow(): void {
 async function requestClose(): Promise<void> {
   if (!mainWindow || closeDialogOpen) return
 
+  if (stickyWindow && !stickyWindow.isDestroyed()) {
+    mainWindow.hide()
+    return
+  }
+
   const action = currentSettings().closeAction
   if (action === 'tray') {
     mainWindow.hide()
@@ -984,7 +992,11 @@ function createQuickWindow(): BrowserWindow {
 function applyStickySettings(win: BrowserWindow): void {
   const settings = currentSettings()
   try {
-    win.setAlwaysOnTop(true, 'floating')
+    if (settings.stickyLayer === 'bottom') {
+      win.setAlwaysOnTop(false)
+    } else {
+      win.setAlwaysOnTop(true, 'floating')
+    }
   } catch {
   }
   try {
@@ -2200,6 +2212,9 @@ function registerIpc(): void {
             STICKY_MODULES.includes(module as StickyModule)
         )
       }
+      if (patch.stickyLayer === 'top' || patch.stickyLayer === 'bottom') {
+        config.stickyLayer = patch.stickyLayer
+      }
       if (typeof patch.autoCheckUpdate === 'boolean') {
         config.autoCheckUpdate = patch.autoCheckUpdate
       }
@@ -2334,7 +2349,18 @@ function registerIpc(): void {
   ipcMain.on('quick:hide', hideQuickCapture)
   ipcMain.on('sticky:open', () => showStickyWindow())
   ipcMain.on('sticky:close', hideStickyWindow)
-  ipcMain.on('main:show', showMainWindow)
+  ipcMain.on('main:show', (_event, module) => {
+    showMainWindow()
+    if (typeof module === 'string') {
+      if (mainWindow?.webContents.isLoading()) {
+        mainWindow.webContents.once('did-finish-load', () => {
+          mainWindow?.webContents.send('navigate:module', module)
+        })
+      } else {
+        mainWindow?.webContents.send('navigate:module', module)
+      }
+    }
+  })
 
   ipcMain.handle('update:check', () => checkForUpdates())
   ipcMain.handle('update:status', () => currentUpdateStatus())
