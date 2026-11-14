@@ -36,6 +36,8 @@ import type {
   SettingsPatch,
   SmartPlannerApi,
   Snapshot,
+  StickyEditorType,
+  StickyStatus,
   Task,
   TaskInput,
   TaskPatch,
@@ -151,6 +153,26 @@ const api: SmartPlannerApi = {
     ipcRenderer.send('window:control', action),
   openSticky: (): void => ipcRenderer.send('sticky:open'),
   closeSticky: (): void => ipcRenderer.send('sticky:close'),
+  openEditor: (type: StickyEditorType, id?: string): void =>
+    ipcRenderer.send('editor:open', type, id),
+  closeEditor: (): void => ipcRenderer.send('editor:close'),
+  getStickyStatus: (): Promise<StickyStatus> =>
+    ipcRenderer.invoke('sticky:status'),
+  retryStickyDesktop: (): Promise<StickyStatus> =>
+    ipcRenderer.invoke('sticky:retry'),
+  onStickyStatus: (callback) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      status: StickyStatus
+    ): void => callback(status)
+    ipcRenderer.on('sticky:status-changed', listener)
+    return () => {
+      ipcRenderer.removeListener('sticky:status-changed', listener)
+    }
+  },
+  focusSticky: (): void => ipcRenderer.send('sticky:focus'),
+  startStickyDrag: (): void => ipcRenderer.send('sticky:drag-start'),
+  endStickyDrag: (): void => ipcRenderer.send('sticky:drag-end'),
   openMain: (module?: string): void => ipcRenderer.send('main:show', module),
   checkForUpdates: (): Promise<UpdateStatus> => ipcRenderer.invoke('update:check'),
   installUpdate: (): void => ipcRenderer.send('update:install'),

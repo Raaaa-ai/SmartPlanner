@@ -133,7 +133,7 @@ function ProjectCard({
   )
 }
 
-function ProjectModal({
+export function ProjectModal({
   project,
   onClose
 }: {

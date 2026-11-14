@@ -13,7 +13,14 @@ export type CloseAction = 'ask' | 'tray' | 'quit'
 
 export type StickyModule = 'tasks' | 'projects' | 'checkin' | 'courses'
 
+export type StickyEditorType = 'task' | 'project' | 'checkin' | 'course'
+
 export type StickyLayer = 'top' | 'bottom'
+
+export interface StickyStatus {
+  mode: 'desktop' | 'fallback'
+  message?: string
+}
 
 export type AnniversaryRepeat = 'yearly' | 'once'
 
@@ -461,6 +468,14 @@ export interface SmartPlannerApi {
   copyText: (text: string) => Promise<void>
   openSticky: () => void
   closeSticky: () => void
+  openEditor: (type: StickyEditorType, id?: string) => void
+  closeEditor: () => void
+  getStickyStatus: () => Promise<StickyStatus>
+  retryStickyDesktop: () => Promise<StickyStatus>
+  onStickyStatus: (callback: (status: StickyStatus) => void) => () => void
+  focusSticky: () => void
+  startStickyDrag: () => void
+  endStickyDrag: () => void
   openMain: (module?: string) => void
   onDataChanged: (callback: () => void) => () => void
   updateSettings: (patch: SettingsPatch) => Promise<Settings>

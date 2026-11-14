@@ -97,7 +97,7 @@ function currentStreak(records: CheckinRecord[], checkinId: string): number {
   return count
 }
 
-function CheckinEditorModal({
+export function CheckinEditorModal({
   checkin,
   onClose
 }: {

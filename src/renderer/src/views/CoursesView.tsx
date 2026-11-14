@@ -347,7 +347,7 @@ function CreditRow({
   )
 }
 
-function CourseEditorModal({
+export function CourseEditorModal({
   mode,
   course,
   plan,

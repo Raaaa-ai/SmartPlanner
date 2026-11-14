@@ -2,6 +2,7 @@ import { useLayoutEffect } from 'react'
 import { WorkspaceProvider } from './state/WorkspaceContext'
 import { ActivationView } from './views/ActivationView'
 import { QuickCapture } from './views/QuickCapture'
+import { StickyEditor } from './views/StickyEditor'
 import { StickyNote } from './views/StickyNote'
 import { Workbench } from './views/Workbench'
 
@@ -9,9 +10,12 @@ export default function App(): React.JSX.Element {
   const hash = window.location.hash
 
   useLayoutEffect(() => {
-    if (hash !== '#sticky') return
-    document.body.classList.add('sticky-mode')
-    return () => document.body.classList.remove('sticky-mode')
+    document.body.classList.toggle('sticky-mode', hash === '#sticky')
+    document.body.classList.toggle('editor-mode', hash.startsWith('#editor'))
+    return () => {
+      document.body.classList.remove('sticky-mode')
+      document.body.classList.remove('editor-mode')
+    }
   }, [hash])
 
   if (hash === '#activate') return <ActivationView />
@@ -20,6 +24,13 @@ export default function App(): React.JSX.Element {
     return (
       <WorkspaceProvider>
         <StickyNote />
+      </WorkspaceProvider>
+    )
+  }
+  if (hash.startsWith('#editor')) {
+    return (
+      <WorkspaceProvider>
+        <StickyEditor />
       </WorkspaceProvider>
     )
   }

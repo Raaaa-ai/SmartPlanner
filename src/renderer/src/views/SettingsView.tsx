@@ -382,17 +382,12 @@ export function SettingsView(): React.JSX.Element {
 
         <div className="settings-row">
           <div className="settings-info">
-            <strong>始终置顶</strong>
+            <strong>桌面固定</strong>
             <span>
-              开启后便签显示在其他窗口上方；关闭后像普通窗口一样会被其他窗口覆盖。Windows 不支持真正的“始终置底”，但关闭工作台时便签仍会保留。
+              便签会固定在桌面图标上层，普通窗口会盖住它，但显示桌面时仍然保留。关闭工作台后便签继续显示；要彻底退出请用托盘菜单「退出」。
             </span>
           </div>
-          <Switch
-            on={settings.stickyLayer === 'top'}
-            onChange={(value) =>
-              void updateSettings({ stickyLayer: value ? 'top' : 'bottom' })
-            }
-          />
+          <span className="license-badge">桌面层</span>
         </div>
 
         {STICKY_MODULE_OPTIONS.map((item) => (

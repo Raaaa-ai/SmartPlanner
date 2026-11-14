@@ -32,6 +32,15 @@ import {
   installUpdate
 } from './updater'
 import {
+  attachWindowToDesktop,
+  detachWindowFromDesktop,
+  focusDesktopWindow,
+  getDesktopMode,
+  isLeftMouseDown,
+  moveWindowToScreen,
+  reattachWindowToDesktop
+} from './desktopLayer'
+import {
   getMachineCode,
   verifyLicenseCode,
   type LicensePayload
@@ -133,6 +142,7 @@ interface AppConfig {
   stickyModules?: string[]
   stickyLayer?: StickyLayer
   stickyOpen?: boolean
+  stickyBounds?: { x: number; y: number; width: number; height: number }
   autoCheckUpdate?: boolean
   windowBounds?: { x: number; y: number; width: number; height: number }
   license?: string
@@ -157,6 +167,7 @@ interface StoreData {
 let mainWindow: BrowserWindow | null = null
 let quickWindow: BrowserWindow | null = null
 let stickyWindow: BrowserWindow | null = null
+let editorWindow: BrowserWindow | null = null
 let activationWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
@@ -186,6 +197,12 @@ let boundsTimer: NodeJS.Timeout | null = null
 let programmaticMove = false
 let closeDialogOpen = false
 let updateTimer: NodeJS.Timeout | null = null
+let stickyDesktopMessage = ''
+let stickyReady = false
+let stickyDragTimer: NodeJS.Timeout | null = null
+let stickyDragStart:
+  | { cursorX: number; cursorY: number; x: number; y: number }
+  | null = null
 
 function readJson<T>(file: string): T | null {
   try {
@@ -989,16 +1006,11 @@ function createQuickWindow(): BrowserWindow {
   return win
 }
 
+const STICKY_WIDTH = 344
+const STICKY_HEIGHT = 740
+
 function applyStickySettings(win: BrowserWindow): void {
   const settings = currentSettings()
-  try {
-    if (settings.stickyLayer === 'bottom') {
-      win.setAlwaysOnTop(false)
-    } else {
-      win.setAlwaysOnTop(true, 'floating')
-    }
-  } catch {
-  }
   try {
     win.setBackgroundMaterial(settings.backgroundBlur ? 'acrylic' : 'none')
   } catch {
@@ -1009,20 +1021,82 @@ function applyStickySettings(win: BrowserWindow): void {
   }
 }
 
+function stopStickyDrag(persist = true): void {
+  if (stickyDragTimer) {
+    clearInterval(stickyDragTimer)
+    stickyDragTimer = null
+  }
+  stickyDragStart = null
+  if (persist) persistConfig()
+}
+
+function startStickyDrag(): void {
+  if (!stickyWindow || stickyWindow.isDestroyed()) return
+  focusDesktopWindow(stickyWindow)
+  const area = screen.getPrimaryDisplay().workArea
+  const fallbackBounds = {
+    x: area.x + area.width - STICKY_WIDTH - 32,
+    y: area.y + 48,
+    width: STICKY_WIDTH,
+    height: STICKY_HEIGHT
+  }
+  const bounds =
+    config.stickyBounds && boundsVisibleOnScreen(config.stickyBounds)
+      ? config.stickyBounds
+      : fallbackBounds
+  const cursor = screen.getCursorScreenPoint()
+  stickyDragStart = {
+    cursorX: cursor.x,
+    cursorY: cursor.y,
+    x: bounds.x,
+    y: bounds.y
+  }
+  if (stickyDragTimer) clearInterval(stickyDragTimer)
+  stickyDragTimer = setInterval(() => {
+    if (!stickyWindow || stickyWindow.isDestroyed() || !stickyDragStart) {
+      stopStickyDrag(false)
+      return
+    }
+    if (!isLeftMouseDown()) {
+      stopStickyDrag()
+      return
+    }
+    const current = screen.getCursorScreenPoint()
+    const x = stickyDragStart.x + (current.x - stickyDragStart.cursorX)
+    const y = stickyDragStart.y + (current.y - stickyDragStart.cursorY)
+    moveWindowToScreen(stickyWindow, x, y)
+    config.stickyBounds = {
+      x,
+      y,
+      width: STICKY_WIDTH,
+      height: STICKY_HEIGHT
+    }
+  }, 16)
+}
+
 function createStickyWindow(): BrowserWindow {
+  const area = screen.getPrimaryDisplay().workArea
+  const fallbackBounds = {
+    x: area.x + area.width - STICKY_WIDTH - 32,
+    y: area.y + 48,
+    width: STICKY_WIDTH,
+    height: STICKY_HEIGHT
+  }
+  const bounds =
+    config.stickyBounds && boundsVisibleOnScreen(config.stickyBounds)
+      ? config.stickyBounds
+      : fallbackBounds
+
   const win = new BrowserWindow({
-    width: 330,
-    height: 620,
-    minWidth: 260,
-    minHeight: 360,
+    ...bounds,
     show: false,
     frame: false,
     transparent: true,
-    resizable: true,
+    resizable: false,
     maximizable: false,
     minimizable: false,
     skipTaskbar: true,
-    alwaysOnTop: true,
+    alwaysOnTop: false,
     hasShadow: true,
     title: 'SmartPlanner 便签',
     webPreferences: {
@@ -1031,9 +1105,12 @@ function createStickyWindow(): BrowserWindow {
     }
   })
 
+  config.stickyBounds = bounds
   applyStickySettings(win)
 
   win.on('close', () => {
+    stopStickyDrag(false)
+    detachWindowFromDesktop(win)
     if (!isQuitting) {
       config.stickyOpen = false
       persistConfig()
@@ -1042,10 +1119,25 @@ function createStickyWindow(): BrowserWindow {
 
   win.on('closed', () => {
     stickyWindow = null
+    stickyReady = false
+    stopStickyDrag(false)
   })
 
   loadRenderer(win, 'sticky')
-  win.once('ready-to-show', () => win.show())
+  win.once('ready-to-show', () => {
+    stickyReady = true
+    const result = attachWindowToDesktop(win, bounds)
+    stickyDesktopMessage = result.message ?? ''
+    win.webContents.send('sticky:status-changed', {
+      mode: getDesktopMode(),
+      message: stickyDesktopMessage
+    })
+    if (result.mode === 'desktop') {
+      win.showInactive()
+    } else {
+      win.show()
+    }
+  })
   return win
 }
 
@@ -1057,8 +1149,13 @@ function showStickyWindow(focus = true): void {
   }
   if (stickyWindow.isMinimized()) stickyWindow.restore()
   applyStickySettings(stickyWindow)
-  stickyWindow.show()
-  if (focus) stickyWindow.focus()
+  if (!stickyReady) return
+  if (getDesktopMode() === 'desktop') {
+    stickyWindow.showInactive()
+  } else {
+    stickyWindow.show()
+    if (focus) stickyWindow.focus()
+  }
 }
 
 function hideStickyWindow(): void {
@@ -1068,6 +1165,74 @@ function hideStickyWindow(): void {
     stickyWindow.close()
   }
   stickyWindow = null
+}
+
+function createEditorWindow(type: string, id: string): void {
+  if (
+    type !== 'task' &&
+    type !== 'project' &&
+    type !== 'checkin' &&
+    type !== 'course'
+  ) {
+    return
+  }
+  if (editorWindow && !editorWindow.isDestroyed()) {
+    editorWindow.close()
+    editorWindow = null
+  }
+
+  const width = 660
+  const height = 780
+  const area = screen.getPrimaryDisplay().workArea
+  const base =
+    config.stickyBounds ??
+    (stickyWindow && !stickyWindow.isDestroyed()
+      ? stickyWindow.getBounds()
+      : area)
+  const x = Math.min(
+    Math.max(area.x + 16, Math.round(base.x + (base.width - width) / 2)),
+    area.x + area.width - width - 16
+  )
+  const y = Math.min(
+    Math.max(area.y + 16, Math.round(base.y + (base.height - height) / 2)),
+    area.y + area.height - height - 16
+  )
+
+  const win = new BrowserWindow({
+    width,
+    height,
+    x,
+    y,
+    show: false,
+    frame: false,
+    transparent: false,
+    resizable: false,
+    maximizable: false,
+    minimizable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    hasShadow: true,
+    backgroundColor: '#f4f0e8',
+    title: 'SmartPlanner 编辑',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false
+    }
+  })
+
+  win.setAlwaysOnTop(true, 'floating')
+  win.on('closed', () => {
+    editorWindow = null
+  })
+  loadRenderer(
+    win,
+    `editor?type=${encodeURIComponent(type)}&id=${encodeURIComponent(id)}`
+  )
+  win.once('ready-to-show', () => {
+    win.show()
+    win.focus()
+  })
+  editorWindow = win
 }
 
 function positionQuickWindow(win: BrowserWindow): void {
@@ -2347,8 +2512,47 @@ function registerIpc(): void {
 
   ipcMain.on('quick:show', showQuickCapture)
   ipcMain.on('quick:hide', hideQuickCapture)
-  ipcMain.on('sticky:open', () => showStickyWindow())
+  ipcMain.on('sticky:open', () => {
+    showStickyWindow()
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.minimize()
+    }
+  })
   ipcMain.on('sticky:close', hideStickyWindow)
+  ipcMain.handle('sticky:status', () => ({
+    mode: getDesktopMode(),
+    message: stickyDesktopMessage
+  }))
+  ipcMain.handle('sticky:retry', () => {
+    if (!stickyWindow || stickyWindow.isDestroyed()) {
+      return { mode: 'fallback', message: '便签未打开' }
+    }
+    const result = reattachWindowToDesktop(stickyWindow)
+    stickyDesktopMessage = result.message ?? ''
+    const status = { mode: getDesktopMode(), message: stickyDesktopMessage }
+    if (stickyWindow && !stickyWindow.isDestroyed()) {
+      stickyWindow.webContents.send('sticky:status-changed', status)
+    }
+    return status
+  })
+  ipcMain.on('sticky:focus', () => {
+    if (stickyWindow && !stickyWindow.isDestroyed()) {
+      focusDesktopWindow(stickyWindow)
+    }
+  })
+  ipcMain.on('sticky:drag-start', startStickyDrag)
+  ipcMain.on('sticky:drag-end', () => stopStickyDrag())
+  ipcMain.on('editor:open', (_event, type, id) => {
+    if (typeof type === 'string') {
+      createEditorWindow(type, typeof id === 'string' ? id : '')
+    }
+  })
+  ipcMain.on('editor:close', () => {
+    if (editorWindow && !editorWindow.isDestroyed()) {
+      editorWindow.close()
+    }
+    editorWindow = null
+  })
   ipcMain.on('main:show', (_event, module) => {
     showMainWindow()
     if (typeof module === 'string') {
