@@ -95,11 +95,10 @@ function UpdateBanner(): React.JSX.Element | null {
 }
 
 export function Workbench(): React.JSX.Element {
-  const { settings, updateSettings, edgeHidden, hideEdgeWindow } = useWorkspace()
+  const { settings, updateSettings } = useWorkspace()
   const [active, setActive] = useState<ModuleKey>(initialModule)
   const activeNav = NAV.find((item) => item.key === active)!
   const collapsed = settings.sidebarCollapsed
-  const autoHide = settings.edgeAutoHide
 
   useEffect(() => {
     return window.api.onNavigate((key) => {
@@ -112,9 +111,6 @@ export function Workbench(): React.JSX.Element {
   return (
     <div
       className={collapsed ? 'window-frame sidebar-collapsed' : 'window-frame'}
-      onMouseLeave={() => {
-        if (autoHide && !edgeHidden) hideEdgeWindow()
-      }}
     >
       <TitleBar />
 
@@ -200,6 +196,13 @@ export function Workbench(): React.JSX.Element {
                 <p className="page-sub">{SUBTITLES[active]}</p>
               </div>
               <div className="header-actions">
+                <button
+                  className="ghost-button"
+                  onClick={() => window.api.openSticky()}
+                >
+                  <Icon name="pin" size={15} />
+                  桌面便签
+                </button>
                 <button
                   className="primary-button"
                   onClick={() => window.api.openQuickCapture()}

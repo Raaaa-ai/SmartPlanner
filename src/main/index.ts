@@ -60,7 +60,9 @@ import type {
   CoursePlanPatch,
   CoursePlanStatus,
   CourseSemester,
-  EdgeSide,
+  CourseSlot,
+  CreditCategory,
+  CreditCategoryInput,
   LicenseStatus,
   Note,
   NoteInput,
@@ -78,6 +80,7 @@ import type {
   Settings,
   SettingsPatch,
   Snapshot,
+  StickyModule,
   Task,
   TaskInput,
   TaskPatch,
@@ -98,6 +101,12 @@ const STATUSES: ProjectStatus[] = ['active', 'paused', 'done']
 const PRIORITIES: TaskPriority[] = ['low', 'normal', 'high']
 const PLAN_STATUSES: CoursePlanStatus[] = ['considering', 'selected', 'dropped']
 const SEMESTERS: CourseSemester[] = ['fall', 'spring']
+const STICKY_MODULES: StickyModule[] = [
+  'tasks',
+  'projects',
+  'checkin',
+  'courses'
+]
 const CHECKIN_PERIODS: CheckinPeriod[] = ['week', 'month', 'year']
 const WEEKDAYS: Weekday[] = [1, 2, 3, 4, 5, 6, 7]
 const CORNERS: WindowCorner[] = [
@@ -120,8 +129,8 @@ interface AppConfig {
   fixedPosition?: boolean
   windowCorner?: WindowCorner
   sidebarCollapsed?: boolean
-  edgeAutoHide?: boolean
-  edgeSide?: EdgeSide
+  stickyModules?: string[]
+  stickyOpen?: boolean
   autoCheckUpdate?: boolean
   windowBounds?: { x: number; y: number; width: number; height: number }
   license?: string
@@ -140,11 +149,12 @@ interface StoreData {
   coursePlans: CoursePlan[]
   checkins: Checkin[]
   checkinRecords: CheckinRecord[]
+  creditCategories: CreditCategory[]
 }
 
 let mainWindow: BrowserWindow | null = null
 let quickWindow: BrowserWindow | null = null
-let edgeWindow: BrowserWindow | null = null
+let stickyWindow: BrowserWindow | null = null
 let activationWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
@@ -164,7 +174,8 @@ let store: StoreData = {
   courses: [],
   coursePlans: [],
   checkins: [],
-  checkinRecords: []
+  checkinRecords: [],
+  creditCategories: []
 }
 let dataDir = ''
 let dataFile = ''
@@ -172,10 +183,6 @@ let configFile = ''
 let boundsTimer: NodeJS.Timeout | null = null
 let programmaticMove = false
 let closeDialogOpen = false
-let edgeHidden = false
-let edgeHideTimer: NodeJS.Timeout | null = null
-let edgeRestoreBounds: { x: number; y: number; width: number; height: number } | null =
-  null
 let updateTimer: NodeJS.Timeout | null = null
 
 function readJson<T>(file: string): T | null {
@@ -216,6 +223,36 @@ function normalizeTime(value: unknown): string {
   return typeof value === 'string' && /^\d{2}:\d{2}$/.test(value) ? value : ''
 }
 
+function normalizeCourseSlots(
+  rawSlots: unknown,
+  fallback: CourseSlot
+): CourseSlot[] {
+  const slots = Array.isArray(rawSlots)
+    ? rawSlots
+        .map((slot) => {
+          const weekday = Number((slot as Partial<CourseSlot>)?.weekday)
+          const startTime = normalizeTime((slot as Partial<CourseSlot>)?.startTime)
+          const endTime = normalizeTime((slot as Partial<CourseSlot>)?.endTime)
+          if (
+            !WEEKDAYS.includes(weekday as Weekday) ||
+            !startTime ||
+            !endTime ||
+            startTime >= endTime
+          ) {
+            return null
+          }
+          return {
+            weekday: weekday as Weekday,
+            startTime,
+            endTime
+          }
+        })
+        .filter((slot): slot is CourseSlot => slot !== null)
+    : []
+
+  return slots.length > 0 ? slots : [fallback]
+}
+
 function normalizeStore(raw: unknown): StoreData {
   const data = raw as Partial<StoreData> | null
   return {
@@ -245,16 +282,79 @@ function normalizeStore(raw: unknown): StoreData {
     reflections: Array.isArray(data?.reflections) ? data.reflections : [],
     notes: Array.isArray(data?.notes) ? data.notes : [],
     captures: Array.isArray(data?.captures) ? data.captures : [],
-    courses: Array.isArray(data?.courses) ? data.courses : [],
+    courses: Array.isArray(data?.courses)
+      ? data.courses.map((course) => {
+          const fallback: CourseSlot = {
+            weekday: normalizeWeekday(course.weekday),
+            startTime: normalizeTime(course.startTime) || '08:00',
+            endTime: normalizeTime(course.endTime) || '09:30'
+          }
+          const slots = normalizeCourseSlots(course.slots, fallback)
+          const first = slots[0]
+          return {
+            ...course,
+            weekday: first.weekday,
+            startTime: first.startTime,
+            endTime: first.endTime,
+            slots
+          }
+        })
+      : [],
     coursePlans: Array.isArray(data?.coursePlans)
-      ? data.coursePlans.map((plan) => ({
-          ...plan,
-          semester: plan.semester === 'spring' ? 'spring' : 'fall'
-        }))
+      ? data.coursePlans.map((plan) => {
+          const fallback: CourseSlot = {
+            weekday: normalizeWeekday(plan.weekday),
+            startTime: normalizeTime(plan.startTime) || '08:00',
+            endTime: normalizeTime(plan.endTime) || '09:30'
+          }
+          const slots = normalizeCourseSlots(plan.slots, fallback)
+          const first = slots[0]
+          return {
+            ...plan,
+            weekday: first.weekday,
+            startTime: first.startTime,
+            endTime: first.endTime,
+            slots,
+            semester: plan.semester === 'spring' ? 'spring' : 'fall',
+            credits: Number.isFinite(Number(plan.credits))
+              ? clamp(Number(plan.credits), 0, 100)
+              : 0,
+            categoryId:
+              typeof plan.categoryId === 'string' ? plan.categoryId : null
+          }
+        })
       : [],
     checkins: Array.isArray(data?.checkins) ? data.checkins : [],
     checkinRecords: Array.isArray(data?.checkinRecords)
       ? data.checkinRecords
+      : [],
+    creditCategories: Array.isArray(data?.creditCategories)
+      ? data.creditCategories.map((category) => ({
+          ...category,
+          id: typeof category.id === 'string' ? category.id : randomUUID(),
+          name:
+            typeof category.name === 'string' && category.name.trim()
+              ? category.name.trim().slice(0, 50)
+              : '未命名类别',
+          earned: Number.isFinite(Number(category.earned))
+            ? Math.max(0, Number(category.earned))
+            : 0,
+          required: Number.isFinite(Number(category.required))
+            ? Math.max(0, Number(category.required))
+            : 0,
+          planned: Number.isFinite(Number(category.planned))
+            ? Math.max(0, Number(category.planned))
+            : 0,
+          note: typeof category.note === 'string' ? category.note.slice(0, 200) : '',
+          createdAt:
+            typeof category.createdAt === 'number'
+              ? category.createdAt
+              : Date.now(),
+          updatedAt:
+            typeof category.updatedAt === 'number'
+              ? category.updatedAt
+              : Date.now()
+        }))
       : []
   }
 }
@@ -290,14 +390,17 @@ function currentSettings(): Settings {
       config.closeAction === 'tray' || config.closeAction === 'quit'
         ? config.closeAction
         : 'ask',
-    alwaysOnTop: config.edgeAutoHide === true ? false : config.alwaysOnTop === true,
+    alwaysOnTop: config.alwaysOnTop === true,
     fixedPosition: config.fixedPosition === true,
     windowCorner: CORNERS.includes(config.windowCorner as WindowCorner)
       ? (config.windowCorner as WindowCorner)
       : 'center',
     sidebarCollapsed: config.sidebarCollapsed === true,
-    edgeAutoHide: config.edgeAutoHide === true,
-    edgeSide: 'right',
+    stickyModules: Array.isArray(config.stickyModules)
+      ? config.stickyModules.filter((module): module is StickyModule =>
+          STICKY_MODULES.includes(module as StickyModule)
+        )
+      : ['tasks', 'projects'],
     autoCheckUpdate: config.autoCheckUpdate !== false,
     dataDir
   }
@@ -324,14 +427,32 @@ function snapshot(): Snapshot {
     ),
     checkins: [...store.checkins].sort((a, b) => a.createdAt - b.createdAt),
     checkinRecords: store.checkinRecords,
+    creditCategories: [...store.creditCategories].sort(
+      (a, b) => a.createdAt - b.createdAt
+    ),
     settings: currentSettings(),
     license: currentLicenseStatus(),
     version: app.getVersion()
   }
 }
 
+let dataChangeTimer: NodeJS.Timeout | null = null
+
+function broadcastDataChanged(): void {
+  if (dataChangeTimer) clearTimeout(dataChangeTimer)
+  dataChangeTimer = setTimeout(() => {
+    dataChangeTimer = null
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send('data:changed')
+      }
+    }
+  }, 60)
+}
+
 function persistStore(): void {
   writeJson(dataFile, store)
+  broadcastDataChanged()
 }
 
 function persistConfig(): void {
@@ -452,7 +573,26 @@ function initStore(): void {
   }
 
   dataFile = join(dataDir, 'smartplanner.json')
-  store = normalizeStore(readJson<StoreData>(dataFile))
+  const rawStore = readJson<StoreData>(dataFile)
+  const hadCreditCategories = Boolean(
+    rawStore && Array.isArray((rawStore as Partial<StoreData>).creditCategories)
+  )
+  store = normalizeStore(rawStore)
+
+  if (!hadCreditCategories && store.creditCategories.length === 0) {
+    const now = Date.now()
+    store.creditCategories = ['专业必修', '通识课', '选修课'].map((name) => ({
+      id: randomUUID(),
+      name,
+      earned: 0,
+      required: 0,
+      planned: 0,
+      note: '',
+      createdAt: now,
+      updatedAt: now
+    }))
+    persistStore()
+  }
 }
 
 
@@ -618,8 +758,6 @@ function placeWindow(win: BrowserWindow, corner: WindowCorner): void {
 }
 
 function guardWindowMove(win: BrowserWindow): void {
-  if (edgeHidden) return
-
   if (!currentSettings().fixedPosition) {
     scheduleBoundsSave(win)
     return
@@ -656,11 +794,7 @@ function boundsVisibleOnScreen(bounds: {
 }
 
 function scheduleBoundsSave(win: BrowserWindow): void {
-  if (
-    currentSettings().fixedPosition ||
-    currentSettings().edgeAutoHide ||
-    edgeHidden
-  ) {
+  if (currentSettings().fixedPosition) {
     return
   }
   if (boundsTimer) clearTimeout(boundsTimer)
@@ -722,12 +856,7 @@ function createMainWindow(): BrowserWindow {
 
   win.on('ready-to-show', () => {
     win.show()
-    edgeSendState()
-    if (currentSettings().edgeAutoHide) {
-      setTimeout(() => hideToEdge(), 800)
-    }
   })
-  win.webContents.on('did-finish-load', () => edgeSendState())
   win.on('move', () => guardWindowMove(win))
   win.on('resize', () => scheduleBoundsSave(win))
 
@@ -750,169 +879,6 @@ function createMainWindow(): BrowserWindow {
   return win
 }
 
-const EDGE_STRIP = 54
-
-function edgeSendState(): void {
-  mainWindow?.webContents.send('window:edge-state', {
-    hidden: edgeHidden,
-    side: currentSettings().edgeSide
-  })
-}
-
-function cancelEdgeHide(): void {
-  if (edgeHideTimer) {
-    clearTimeout(edgeHideTimer)
-    edgeHideTimer = null
-  }
-}
-
-function edgeDockedBounds(): {
-  x: number
-  y: number
-  width: number
-  height: number
-} {
-  const base =
-    edgeRestoreBounds ??
-    config.windowBounds ??
-    mainWindow?.getBounds() ?? { x: 0, y: 0, width: 1160, height: 780 }
-  const area = screen.getDisplayMatching(base).workArea
-  const y = Math.min(
-    Math.max(base.y, area.y),
-    area.y + area.height - base.height
-  )
-  return {
-    x: area.x + area.width - base.width,
-    y,
-    width: base.width,
-    height: base.height
-  }
-}
-
-function showFromEdge(): void {
-  if (!mainWindow) {
-    showMainWindow()
-    return
-  }
-
-  cancelEdgeHide()
-  hideEdgeWindowBar()
-  if (!edgeHidden) {
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
-    return
-  }
-
-  programmaticMove = true
-  mainWindow.setBounds(edgeDockedBounds())
-  setTimeout(() => {
-    programmaticMove = false
-  }, 150)
-
-  edgeHidden = false
-  try {
-    mainWindow.setFocusable(true)
-    mainWindow.setAlwaysOnTop(false)
-  } catch {
-  }
-  mainWindow.show()
-  mainWindow.focus()
-  edgeSendState()
-}
-
-function restoreFromEdge(): void {
-  if (!mainWindow) return
-  cancelEdgeHide()
-  hideEdgeWindowBar()
-  edgeHidden = false
-
-  const restore = edgeRestoreBounds
-  if (restore && boundsVisibleOnScreen(restore)) {
-    programmaticMove = true
-    mainWindow.setBounds(restore)
-    config.windowBounds = restore
-    persistConfig()
-    setTimeout(() => {
-      programmaticMove = false
-    }, 150)
-  }
-
-  edgeRestoreBounds = null
-  try {
-    mainWindow.setFocusable(true)
-    mainWindow.setAlwaysOnTop(currentSettings().alwaysOnTop, 'floating')
-  } catch {
-  }
-  edgeSendState()
-}
-
-function hideToEdge(): void {
-  if (!mainWindow || !currentSettings().edgeAutoHide) return
-  cancelEdgeHide()
-  if (edgeHidden) return
-
-  const bounds = mainWindow.getBounds()
-  if (bounds.width <= 0) return
-
-  if (!edgeRestoreBounds) {
-    edgeRestoreBounds = bounds
-    config.windowBounds = bounds
-  }
-
-  const base = edgeRestoreBounds
-  const area = screen.getDisplayMatching(base).workArea
-  const y = Math.min(
-    Math.max(base.y, area.y),
-    area.y + area.height - base.height
-  )
-  const x = area.x + area.width - EDGE_STRIP
-
-  programmaticMove = true
-  try {
-    mainWindow.setFocusable(false)
-    mainWindow.setAlwaysOnTop(false)
-    mainWindow.blur()
-  } catch {
-  }
-  mainWindow.setPosition(Math.round(x), Math.round(y))
-  edgeHidden = true
-  persistConfig()
-  showEdgeWindow()
-  setTimeout(() => {
-    programmaticMove = false
-    edgeSendState()
-  }, 150)
-}
-
-function scheduleEdgeHide(): void {
-  if (!currentSettings().edgeAutoHide || closeDialogOpen) return
-  cancelEdgeHide()
-  edgeHideTimer = setTimeout(() => {
-    edgeHideTimer = null
-    hideToEdge()
-  }, 450)
-}
-
-function applyEdgeBehavior(previous: Settings, next: Settings): void {
-  if (!mainWindow) return
-
-  if (next.edgeAutoHide) {
-    if (!previous.edgeAutoHide) {
-      setTimeout(() => hideToEdge(), 200)
-    } else if (previous.edgeSide !== next.edgeSide) {
-      if (edgeHidden) {
-        edgeHidden = false
-        setTimeout(() => hideToEdge(), 80)
-      } else {
-        hideToEdge()
-      }
-    }
-  } else if (previous.edgeAutoHide) {
-    restoreFromEdge()
-  }
-}
-
 function showMainWindow(): void {
   if (!appStarted) {
     showActivationWindow()
@@ -920,10 +886,6 @@ function showMainWindow(): void {
   }
   if (!mainWindow) {
     mainWindow = createMainWindow()
-    return
-  }
-  if (edgeHidden) {
-    showFromEdge()
     return
   }
   if (mainWindow.isMinimized()) mainWindow.restore()
@@ -934,10 +896,6 @@ function showMainWindow(): void {
 function toggleMainWindow(): void {
   if (!appStarted) {
     showActivationWindow()
-    return
-  }
-  if (edgeHidden) {
-    showFromEdge()
     return
   }
   if (mainWindow?.isVisible()) {
@@ -1023,66 +981,81 @@ function createQuickWindow(): BrowserWindow {
   return win
 }
 
-function createEdgeWindow(): BrowserWindow {
+function applyStickySettings(win: BrowserWindow): void {
+  const settings = currentSettings()
+  try {
+    win.setAlwaysOnTop(true, 'floating')
+  } catch {
+  }
+  try {
+    win.setBackgroundMaterial(settings.backgroundBlur ? 'acrylic' : 'none')
+  } catch {
+  }
+  try {
+    win.setBackgroundColor(settings.backgroundBlur ? '#00000000' : '#f6f7f9')
+  } catch {
+  }
+}
+
+function createStickyWindow(): BrowserWindow {
   const win = new BrowserWindow({
-    width: 54,
-    height: 640,
+    width: 330,
+    height: 620,
+    minWidth: 260,
+    minHeight: 360,
     show: false,
     frame: false,
     transparent: true,
-    resizable: false,
-    movable: false,
-    minimizable: false,
+    resizable: true,
     maximizable: false,
+    minimizable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
-    hasShadow: false,
-    focusable: false,
+    hasShadow: true,
+    title: 'SmartPlanner 便签',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
     }
   })
 
-  win.setAlwaysOnTop(true, 'floating')
-  win.setFocusable(false)
+  applyStickySettings(win)
 
-  win.on('closed', () => {
-    edgeWindow = null
+  win.on('close', () => {
+    if (!isQuitting) {
+      config.stickyOpen = false
+      persistConfig()
+    }
   })
 
-  loadRenderer(win, 'edge')
+  win.on('closed', () => {
+    stickyWindow = null
+  })
+
+  loadRenderer(win, 'sticky')
+  win.once('ready-to-show', () => win.show())
   return win
 }
 
-function placeEdgeWindow(win: BrowserWindow): void {
-  const base =
-    edgeRestoreBounds ??
-    config.windowBounds ??
-    screen.getPrimaryDisplay().workArea
-  const area = screen.getDisplayMatching(base).workArea
-  const [width] = win.getSize()
-  const height = Math.max(240, Math.min(640, area.height - 40))
-  win.setSize(width, height)
-  win.setPosition(
-    Math.round(area.x + area.width - width),
-    Math.round(area.y + (area.height - height) / 2)
-  )
+function showStickyWindow(focus = true): void {
+  config.stickyOpen = true
+  persistConfig()
+  if (!stickyWindow || stickyWindow.isDestroyed()) {
+    stickyWindow = createStickyWindow()
+  }
+  if (stickyWindow.isMinimized()) stickyWindow.restore()
+  applyStickySettings(stickyWindow)
+  stickyWindow.show()
+  if (focus) stickyWindow.focus()
 }
 
-function showEdgeWindow(): void {
-  if (!currentSettings().edgeAutoHide) return
-  if (!edgeWindow || edgeWindow.isDestroyed()) {
-    edgeWindow = createEdgeWindow()
+function hideStickyWindow(): void {
+  config.stickyOpen = false
+  persistConfig()
+  if (stickyWindow && !stickyWindow.isDestroyed()) {
+    stickyWindow.close()
   }
-  placeEdgeWindow(edgeWindow)
-  edgeWindow.showInactive()
-}
-
-function hideEdgeWindowBar(): void {
-  if (edgeWindow && !edgeWindow.isDestroyed()) {
-    edgeWindow.hide()
-  }
+  stickyWindow = null
 }
 
 function positionQuickWindow(win: BrowserWindow): void {
@@ -1165,12 +1138,48 @@ function normalizeWeekday(value: unknown, fallback: Weekday = 1): Weekday {
   return WEEKDAYS.includes(day as Weekday) ? (day as Weekday) : fallback
 }
 
+function sanitizeCourseSlots(input: CourseInput): CourseSlot[] | null {
+  const rawSlots =
+    Array.isArray(input.slots) && input.slots.length > 0
+      ? input.slots
+      : [
+          {
+            weekday: normalizeWeekday(input.weekday),
+            startTime: normalizeTime(input.startTime),
+            endTime: normalizeTime(input.endTime)
+          }
+        ]
+
+  const seen = new Set<string>()
+  const slots: CourseSlot[] = []
+
+  for (const raw of rawSlots.slice(0, 20)) {
+    const weekday = Number(raw?.weekday)
+    const startTime = normalizeTime(raw?.startTime)
+    const endTime = normalizeTime(raw?.endTime)
+    if (
+      !WEEKDAYS.includes(weekday as Weekday) ||
+      !startTime ||
+      !endTime ||
+      startTime >= endTime
+    ) {
+      return null
+    }
+    const key = `${weekday}-${startTime}-${endTime}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    slots.push({ weekday: weekday as Weekday, startTime, endTime })
+  }
+
+  return slots.length > 0 ? slots : null
+}
+
 function sanitizeCourseInput(input: CourseInput): CourseInput | null {
   if (!input || typeof input.name !== 'string' || !input.name.trim()) return null
 
-  const startTime = normalizeTime(input.startTime)
-  const endTime = normalizeTime(input.endTime)
-  if (!startTime || !endTime || startTime >= endTime) return null
+  const slots = sanitizeCourseSlots(input)
+  if (!slots) return null
+  const first = slots[0]
 
   return {
     name: input.name.trim().slice(0, 120),
@@ -1180,9 +1189,10 @@ function sanitizeCourseInput(input: CourseInput): CourseInput | null {
       typeof input.location === 'string'
         ? input.location.trim().slice(0, 120)
         : '',
-    weekday: normalizeWeekday(input.weekday),
-    startTime,
-    endTime,
+    weekday: first.weekday,
+    startTime: first.startTime,
+    endTime: first.endTime,
+    slots,
     weeks: typeof input.weeks === 'string' ? input.weeks.trim().slice(0, 80) : '',
     color: normalizeColor(input.color),
     note: typeof input.note === 'string' ? input.note.slice(0, 2000) : ''
@@ -1193,6 +1203,13 @@ function sanitizeCoursePlanInput(input: CoursePlanInput): CoursePlanInput | null
   const base = sanitizeCourseInput(input)
   if (!base) return null
 
+  const credits = Number(input.credits)
+  const categoryId =
+    typeof input.categoryId === 'string' &&
+    store.creditCategories.some((category) => category.id === input.categoryId)
+      ? input.categoryId
+      : null
+
   return {
     ...base,
     semester: SEMESTERS.includes(input.semester as CourseSemester)
@@ -1200,7 +1217,11 @@ function sanitizeCoursePlanInput(input: CoursePlanInput): CoursePlanInput | null
       : 'fall',
     status: PLAN_STATUSES.includes(input.status as CoursePlanStatus)
       ? (input.status as CoursePlanStatus)
-      : 'considering'
+      : 'considering',
+    credits: Number.isFinite(credits)
+      ? clamp(credits, 0, 100)
+      : 0,
+    categoryId
   }
 }
 
@@ -1254,6 +1275,23 @@ function cleanupStore(kind: CleanupKind): number {
 
   if (removed > 0) persistStore()
   return removed
+}
+
+function sanitizeCreditCategory(
+  input: CreditCategoryInput
+): CreditCategoryInput | null {
+  if (!input || typeof input.name !== 'string' || !input.name.trim()) return null
+
+  const readNumber = (value: unknown): number =>
+    Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0
+
+  return {
+    name: input.name.trim().slice(0, 50),
+    earned: readNumber(input.earned),
+    required: readNumber(input.required),
+    planned: readNumber(input.planned),
+    note: typeof input.note === 'string' ? input.note.slice(0, 200) : ''
+  }
 }
 
 function isValidAnniversaryDate(
@@ -1725,14 +1763,21 @@ function registerIpc(): void {
     if (!input) return null
 
     const now = Date.now()
+    const slots = input.slots ?? []
+    const first = slots[0] ?? {
+      weekday: 1 as Weekday,
+      startTime: '08:00',
+      endTime: '09:30'
+    }
     const course: Course = {
       id: randomUUID(),
       name: input.name,
       teacher: input.teacher ?? '',
       location: input.location ?? '',
-      weekday: input.weekday ?? 1,
-      startTime: input.startTime ?? '08:00',
-      endTime: input.endTime ?? '09:30',
+      weekday: first.weekday,
+      startTime: first.startTime,
+      endTime: first.endTime,
+      slots,
       weeks: input.weeks ?? '',
       color: input.color ?? DEFAULT_ACCENT,
       note: input.note ?? '',
@@ -1749,16 +1794,37 @@ function registerIpc(): void {
     const course = store.courses.find((item) => item.id === id)
     if (!course || !patch || typeof patch !== 'object') return null
 
+    let slots = Array.isArray(patch.slots) ? patch.slots : course.slots
+    if (
+      !Array.isArray(patch.slots) &&
+      (patch.weekday !== undefined ||
+        patch.startTime !== undefined ||
+        patch.endTime !== undefined)
+    ) {
+      slots = slots.map((slot, index) =>
+        index === 0
+          ? {
+              ...slot,
+              weekday: patch.weekday ?? slot.weekday,
+              startTime:
+                typeof patch.startTime === 'string'
+                  ? patch.startTime
+                  : slot.startTime,
+              endTime:
+                typeof patch.endTime === 'string'
+                  ? patch.endTime
+                  : slot.endTime
+            }
+          : slot
+      )
+    }
+
     const next = sanitizeCourseInput({
       name: typeof patch.name === 'string' ? patch.name : course.name,
       teacher: typeof patch.teacher === 'string' ? patch.teacher : course.teacher,
       location:
         typeof patch.location === 'string' ? patch.location : course.location,
-      weekday: patch.weekday ?? course.weekday,
-      startTime:
-        typeof patch.startTime === 'string' ? patch.startTime : course.startTime,
-      endTime:
-        typeof patch.endTime === 'string' ? patch.endTime : course.endTime,
+      slots,
       weeks: typeof patch.weeks === 'string' ? patch.weeks : course.weeks,
       color: typeof patch.color === 'string' ? patch.color : course.color,
       note: typeof patch.note === 'string' ? patch.note : course.note
@@ -1781,17 +1847,26 @@ function registerIpc(): void {
     if (!input) return null
 
     const now = Date.now()
+    const slots = input.slots ?? []
+    const first = slots[0] ?? {
+      weekday: 1 as Weekday,
+      startTime: '08:00',
+      endTime: '09:30'
+    }
     const plan: CoursePlan = {
       id: randomUUID(),
       name: input.name,
       teacher: input.teacher ?? '',
       location: input.location ?? '',
-      weekday: input.weekday ?? 1,
-      startTime: input.startTime ?? '08:00',
-      endTime: input.endTime ?? '09:30',
+      weekday: first.weekday,
+      startTime: first.startTime,
+      endTime: first.endTime,
+      slots,
       weeks: input.weeks ?? '',
       semester: input.semester ?? 'fall',
       status: input.status ?? 'considering',
+      credits: input.credits ?? 0,
+      categoryId: input.categoryId ?? null,
       note: input.note ?? '',
       color: input.color ?? DEFAULT_ACCENT,
       createdAt: now,
@@ -1809,19 +1884,44 @@ function registerIpc(): void {
       const plan = store.coursePlans.find((item) => item.id === id)
       if (!plan || !patch || typeof patch !== 'object') return null
 
+      let slots = Array.isArray(patch.slots) ? patch.slots : plan.slots
+      if (
+        !Array.isArray(patch.slots) &&
+        (patch.weekday !== undefined ||
+          patch.startTime !== undefined ||
+          patch.endTime !== undefined)
+      ) {
+        slots = slots.map((slot, index) =>
+          index === 0
+            ? {
+                ...slot,
+                weekday: patch.weekday ?? slot.weekday,
+                startTime:
+                  typeof patch.startTime === 'string'
+                    ? patch.startTime
+                    : slot.startTime,
+                endTime:
+                  typeof patch.endTime === 'string'
+                    ? patch.endTime
+                    : slot.endTime
+              }
+            : slot
+        )
+      }
+
       const next = sanitizeCoursePlanInput({
         name: typeof patch.name === 'string' ? patch.name : plan.name,
         teacher: typeof patch.teacher === 'string' ? patch.teacher : plan.teacher,
         location:
           typeof patch.location === 'string' ? patch.location : plan.location,
-        weekday: patch.weekday ?? plan.weekday,
-        startTime:
-          typeof patch.startTime === 'string' ? patch.startTime : plan.startTime,
-        endTime:
-          typeof patch.endTime === 'string' ? patch.endTime : plan.endTime,
+        slots,
         weeks: typeof patch.weeks === 'string' ? patch.weeks : plan.weeks,
         semester: patch.semester ?? plan.semester,
         status: patch.status ?? plan.status,
+        credits:
+          typeof patch.credits === 'number' ? patch.credits : plan.credits,
+        categoryId:
+          patch.categoryId !== undefined ? patch.categoryId : plan.categoryId,
         note: typeof patch.note === 'string' ? patch.note : plan.note,
         color: typeof patch.color === 'string' ? patch.color : plan.color
       })
@@ -1843,25 +1943,33 @@ function registerIpc(): void {
     const plan = store.coursePlans.find((item) => item.id === id)
     if (!plan) return null
 
+    const slotKey = (slots: CourseSlot[]): string =>
+      slots
+        .map((slot) => `${slot.weekday}-${slot.startTime}-${slot.endTime}`)
+        .sort()
+        .join('|')
     const existing = store.courses.find(
       (course) =>
-        course.name === plan.name &&
-        course.weekday === plan.weekday &&
-        course.startTime === plan.startTime &&
-        course.endTime === plan.endTime
+        course.name === plan.name && slotKey(course.slots) === slotKey(plan.slots)
     )
 
     let course = existing
     if (!course) {
       const now = Date.now()
+      const first = plan.slots[0] ?? {
+        weekday: plan.weekday,
+        startTime: plan.startTime,
+        endTime: plan.endTime
+      }
       course = {
         id: randomUUID(),
         name: plan.name,
         teacher: plan.teacher,
         location: plan.location,
-        weekday: plan.weekday,
-        startTime: plan.startTime,
-        endTime: plan.endTime,
+        weekday: first.weekday,
+        startTime: first.startTime,
+        endTime: first.endTime,
+        slots: plan.slots,
         weeks: plan.weeks,
         color: plan.color,
         note: plan.note,
@@ -1875,6 +1983,66 @@ function registerIpc(): void {
     plan.updatedAt = Date.now()
     persistStore()
     return { course, plan }
+  })
+
+  ipcMain.handle('credit:create', (_event, raw: CreditCategoryInput) => {
+    const input = sanitizeCreditCategory(raw)
+    if (!input) return null
+
+    const now = Date.now()
+    const category: CreditCategory = {
+      id: randomUUID(),
+      name: input.name,
+      earned: input.earned ?? 0,
+      required: input.required ?? 0,
+      planned: input.planned ?? 0,
+      note: input.note ?? '',
+      createdAt: now,
+      updatedAt: now
+    }
+
+    store.creditCategories.push(category)
+    persistStore()
+    return category
+  })
+
+  ipcMain.handle(
+    'credit:update',
+    (_event, id: string, patch: Partial<CreditCategoryInput>) => {
+      const category = store.creditCategories.find((item) => item.id === id)
+      if (!category || !patch || typeof patch !== 'object') return null
+
+      const next = sanitizeCreditCategory({
+        name: typeof patch.name === 'string' ? patch.name : category.name,
+        earned:
+          typeof patch.earned === 'number' ? patch.earned : category.earned,
+        required:
+          typeof patch.required === 'number'
+            ? patch.required
+            : category.required,
+        planned:
+          typeof patch.planned === 'number' ? patch.planned : category.planned,
+        note: typeof patch.note === 'string' ? patch.note : category.note
+      })
+      if (!next) return null
+
+      Object.assign(category, next, { updatedAt: Date.now() })
+      persistStore()
+      return category
+    }
+  )
+
+  ipcMain.handle('credit:delete', (_event, id: string) => {
+    const before = store.creditCategories.length
+    store.creditCategories = store.creditCategories.filter(
+      (item) => item.id !== id
+    )
+    if (store.creditCategories.length !== before) {
+      store.coursePlans = store.coursePlans.map((plan) =>
+        plan.categoryId === id ? { ...plan, categoryId: null } : plan
+      )
+      persistStore()
+    }
   })
 
   ipcMain.handle('checkin:create', (_event, raw: CheckinInput) => {
@@ -2019,7 +2187,6 @@ function registerIpc(): void {
       }
       if (typeof patch.fixedPosition === 'boolean') {
         config.fixedPosition = patch.fixedPosition
-        if (patch.fixedPosition) config.edgeAutoHide = false
       }
       if (CORNERS.includes(patch.windowCorner as WindowCorner)) {
         config.windowCorner = patch.windowCorner as WindowCorner
@@ -2027,26 +2194,29 @@ function registerIpc(): void {
       if (typeof patch.sidebarCollapsed === 'boolean') {
         config.sidebarCollapsed = patch.sidebarCollapsed
       }
-      if (typeof patch.edgeAutoHide === 'boolean') {
-        config.edgeAutoHide = patch.edgeAutoHide
-        if (patch.edgeAutoHide) {
-          config.fixedPosition = false
-          config.alwaysOnTop = false
-        }
+      if (Array.isArray(patch.stickyModules)) {
+        config.stickyModules = patch.stickyModules.filter(
+          (module): module is StickyModule =>
+            STICKY_MODULES.includes(module as StickyModule)
+        )
       }
-      config.edgeSide = 'right'
       if (typeof patch.autoCheckUpdate === 'boolean') {
         config.autoCheckUpdate = patch.autoCheckUpdate
       }
     }
 
     persistConfig()
+    broadcastDataChanged()
+
+    if (stickyWindow && !stickyWindow.isDestroyed()) {
+      applyStickySettings(stickyWindow)
+    }
 
     if (mainWindow) {
       const next = currentSettings()
       applyWindowSettings(mainWindow)
 
-      if (next.fixedPosition && !next.edgeAutoHide) {
+      if (next.fixedPosition) {
         if (patch?.windowCorner && next.windowCorner !== previous.windowCorner) {
           placeWindow(mainWindow, next.windowCorner)
           config.windowBounds = mainWindow.getBounds()
@@ -2056,8 +2226,6 @@ function registerIpc(): void {
           persistConfig()
         }
       }
-
-      applyEdgeBehavior(previous, next)
     }
 
     if (typeof patch?.autoCheckUpdate === 'boolean') {
@@ -2164,27 +2332,15 @@ function registerIpc(): void {
 
   ipcMain.on('quick:show', showQuickCapture)
   ipcMain.on('quick:hide', hideQuickCapture)
+  ipcMain.on('sticky:open', () => showStickyWindow())
+  ipcMain.on('sticky:close', hideStickyWindow)
+  ipcMain.on('main:show', showMainWindow)
 
   ipcMain.handle('update:check', () => checkForUpdates())
   ipcMain.handle('update:status', () => currentUpdateStatus())
   ipcMain.on('update:install', () => {
     createUpdateBackup()
     installUpdate()
-  })
-
-  ipcMain.on('window:edge', (_event, action: unknown) => {
-    if (action === 'show') {
-      showFromEdge()
-    } else if (action === 'hide') {
-      scheduleEdgeHide()
-    }
-  })
-
-  ipcMain.on('edge:activate', (_event, key: unknown) => {
-    if (typeof key !== 'string') return
-    hideEdgeWindowBar()
-    showFromEdge()
-    mainWindow?.webContents.send('navigate:module', key)
   })
 
   ipcMain.on('window:control', (_event, action: unknown) => {
@@ -2304,6 +2460,10 @@ function startApp(): void {
   }
   activationWindow = null
 
+  if (config.stickyOpen === true) {
+    showStickyWindow(false)
+  }
+
   if (currentSettings().autoCheckUpdate) {
     setTimeout(() => {
       void checkForUpdates()
@@ -2361,7 +2521,6 @@ if (!gotSingleInstanceLock) {
   app.on('will-quit', () => {
     globalShortcut.unregisterAll()
     if (updateTimer) clearInterval(updateTimer)
-    cancelEdgeHide()
   })
 
   app.on('window-all-closed', () => {

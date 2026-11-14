@@ -1,11 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { ProgressEntry, RecordCard } from '../../../shared/types'
+import type {
+  Checkin,
+  Course,
+  CourseSlot,
+  ProgressEntry,
+  RecordCard
+} from '../../../shared/types'
 import { Icon } from '../components/Icon'
 import { TaskCheckbox } from '../components/TaskCheckbox'
 import {
   formatDayDate,
   formatMonthTitle,
   monthCells,
+  parseISODate,
   todayISO,
   toISODate
 } from '../lib/date'
@@ -28,6 +35,9 @@ export function CalendarView(): React.JSX.Element {
     tasks,
     recordCards,
     reflections,
+    courses,
+    checkins,
+    checkinRecords,
     addProgress,
     updateTask
   } = useWorkspace()
@@ -104,10 +114,41 @@ export function CalendarView(): React.JSX.Element {
     return map
   }, [tasks])
 
+  const checkinById = useMemo(
+    () => new Map(checkins.map((checkin) => [checkin.id, checkin])),
+    [checkins]
+  )
+
+  const checkinsByDate = useMemo(() => {
+    const map = new Map<string, typeof checkinRecords>()
+    for (const record of checkinRecords) {
+      const list = map.get(record.date)
+      if (list) list.push(record)
+      else map.set(record.date, [record])
+    }
+    return map
+  }, [checkinRecords])
+
+  function coursesForDate(iso: string): { course: Course; slot: CourseSlot }[] {
+    const date = parseISODate(iso)
+    const weekday = date.getDay() === 0 ? 7 : date.getDay()
+    return courses
+      .flatMap((course) =>
+        course.slots
+          .filter((slot) => slot.weekday === weekday)
+          .map((slot) => ({ course, slot }))
+      )
+      .sort((a, b) => a.slot.startTime.localeCompare(b.slot.startTime))
+  }
+
   const selectedEntries = byDate.get(selectedDate) ?? []
   const selectedTasks = tasksByDate.get(selectedDate) ?? []
   const selectedRecords = recordsByDate.get(selectedDate) ?? []
   const selectedReflection = reflectionByDate.get(selectedDate)
+  const selectedCourses = coursesForDate(selectedDate)
+  const selectedCheckins = (checkinsByDate.get(selectedDate) ?? [])
+    .map((record) => checkinById.get(record.checkinId))
+    .filter((checkin): checkin is Checkin => Boolean(checkin))
 
   function changeMonth(delta: number): void {
     setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + delta, 1))
@@ -173,6 +214,8 @@ export function CalendarView(): React.JSX.Element {
           <span><i className="legend-dot progress" />项目</span>
           <span><i className="legend-dot records" />记录</span>
           <span><i className="legend-dot reflection" />感想</span>
+          <span><i className="legend-dot" style={{ background: '#3c6e71' }} />课程</span>
+          <span><i className="legend-dot" style={{ background: '#d97706' }} />打卡</span>
         </div>
 
         <div className="calendar-grid">
@@ -189,6 +232,8 @@ export function CalendarView(): React.JSX.Element {
             const dayTasks = tasksByDate.get(iso) ?? []
             const recordCount = recordsByDate.get(iso)?.length ?? 0
             const hasReflection = reflectionByDate.has(iso)
+            const dayCourses = coursesForDate(iso)
+            const dayCheckins = checkinsByDate.get(iso) ?? []
             const indicators: { key: string; color: string; title: string }[] = []
 
             if (dayTasks.length > 0) {
@@ -217,6 +262,20 @@ export function CalendarView(): React.JSX.Element {
                 key: 'reflection',
                 color: '#8a6f8f',
                 title: '有每日感想'
+              })
+            }
+            if (dayCourses.length > 0) {
+              indicators.push({
+                key: 'courses',
+                color: '#3c6e71',
+                title: `${dayCourses.length} 节课`
+              })
+            }
+            if (dayCheckins.length > 0) {
+              indicators.push({
+                key: 'checkin',
+                color: '#d97706',
+                title: `${dayCheckins.length} 个打卡`
               })
             }
 
@@ -257,12 +316,20 @@ export function CalendarView(): React.JSX.Element {
           <p className="page-sub">
             {selectedTasks.length +
               selectedEntries.length +
-              selectedRecords.length ===
+              selectedRecords.length +
+              selectedCourses.length +
+              selectedCheckins.length ===
               0 && !selectedReflection
               ? '这一天还没有记录'
               : [
                   selectedTasks.length > 0
                     ? `${selectedTasks.length} 待办`
+                    : '',
+                  selectedCourses.length > 0
+                    ? `${selectedCourses.length} 节课`
+                    : '',
+                  selectedCheckins.length > 0
+                    ? `${selectedCheckins.length} 打卡`
                     : '',
                   selectedEntries.length > 0
                     ? `${selectedEntries.length} 进展`
@@ -398,6 +465,60 @@ export function CalendarView(): React.JSX.Element {
             <p className="day-reflection">
               {selectedReflection.content.trim() || '（只记录了心情）'}
             </p>
+          </>
+        )}
+
+        {selectedCourses.length > 0 && (
+          <>
+            <div className="divider" />
+            <div className="panel-head tight">
+              <h3>当天课程</h3>
+              <span className="muted">{selectedCourses.length} 节</span>
+            </div>
+            <ul className="feed">
+              {selectedCourses.map(({ course, slot }, index) => (
+                <li className="feed-item" key={`${course.id}-${index}`}>
+                  <span
+                    className="feed-dot"
+                    style={{ background: course.color }}
+                  />
+                  <div className="feed-body">
+                    <div className="feed-title">{course.name}</div>
+                    <div className="feed-text">
+                      {slot.startTime} - {slot.endTime}
+                      {course.location ? ` · ${course.location}` : ''}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+
+        {selectedCheckins.length > 0 && (
+          <>
+            <div className="divider" />
+            <div className="panel-head tight">
+              <h3>当天打卡</h3>
+              <span className="muted">{selectedCheckins.length} 个</span>
+            </div>
+            <ul className="feed">
+              {selectedCheckins.map((checkin) => (
+                <li className="feed-item" key={checkin.id}>
+                  <span
+                    className="feed-dot"
+                    style={{ background: checkin.color }}
+                  />
+                  <div className="feed-body">
+                    <div className="feed-title">{checkin.name}</div>
+                    <div className="feed-text">
+                      目标 {checkin.targetDays} 天 · 已完成
+                    </div>
+                  </div>
+                  <span className="percent-badge">已打卡</span>
+                </li>
+              ))}
+            </ul>
           </>
         )}
 

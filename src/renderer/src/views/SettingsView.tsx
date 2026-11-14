@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type {
   CleanupKind,
   CloseAction,
+  StickyModule,
   WindowCorner
 } from '../../../shared/types'
 import { Icon } from '../components/Icon'
@@ -30,6 +31,17 @@ const CORNER_LABEL: Record<WindowCorner, string> = {
   'bottom-left': '左下角',
   'bottom-right': '右下角'
 }
+
+const STICKY_MODULE_OPTIONS: {
+  key: StickyModule
+  label: string
+  hint: string
+}[] = [
+  { key: 'tasks', label: '待办', hint: '今天与即将到期的待办，可直接勾选完成。' },
+  { key: 'projects', label: '项目', hint: '进行中的项目、整体进度和最近一条进展。' },
+  { key: 'checkin', label: '打卡', hint: '今日打卡目标，可直接在便签里打卡。' },
+  { key: 'courses', label: '课程', hint: '今天的课程时间、地点和课程名。' }
+]
 
 function Switch({
   on,
@@ -79,6 +91,15 @@ export function SettingsView(): React.JSX.Element {
   const expiredAnniversaryCount = anniversaries.filter(
     (item) => item.repeat === 'once' && item.date < todayISO()
   ).length
+
+  function toggleStickyModule(key: StickyModule): void {
+    const selected = new Set(settings.stickyModules)
+    if (selected.has(key)) selected.delete(key)
+    else selected.add(key)
+    void updateSettings({
+      stickyModules: Array.from(selected) as StickyModule[]
+    })
+  }
 
   async function handleCleanup(
     kind: CleanupKind,
@@ -245,8 +266,7 @@ export function SettingsView(): React.JSX.Element {
                 alwaysOnTop: false,
                 fixedPosition: false,
                 windowCorner: 'center',
-                sidebarCollapsed: false,
-                edgeAutoHide: false
+                sidebarCollapsed: false
               })
             }
           >
@@ -263,15 +283,10 @@ export function SettingsView(): React.JSX.Element {
         <div className="settings-row">
           <div className="settings-info">
             <strong>置顶显示</strong>
-            <span>
-              {settings.edgeAutoHide
-                ? '贴边自动隐藏开启时，窗口会置于其他窗口下层。'
-                : '让工作台始终显示在其他窗口上方。'}
-            </span>
+            <span>让工作台始终显示在其他窗口上方。</span>
           </div>
           <Switch
             on={settings.alwaysOnTop}
-            disabled={settings.edgeAutoHide}
             onChange={(value) => void updateSettings({ alwaysOnTop: value })}
           />
         </div>
@@ -325,19 +340,6 @@ export function SettingsView(): React.JSX.Element {
 
         <div className="settings-row">
           <div className="settings-info">
-            <strong>贴边自动隐藏</strong>
-            <span>
-              主界面会滑到屏幕右侧下层，屏幕右边缘保留「今日」「待办」等竖排标签；鼠标移到标签上自动展开。
-            </span>
-          </div>
-          <Switch
-            on={settings.edgeAutoHide}
-            onChange={(value) => void updateSettings({ edgeAutoHide: value })}
-          />
-        </div>
-
-        <div className="settings-row">
-          <div className="settings-info">
             <strong>关闭窗口时</strong>
             <span>选择关闭按钮的行为；选「每次询问」可在关闭时再决定。</span>
           </div>
@@ -355,6 +357,41 @@ export function SettingsView(): React.JSX.Element {
             <option value="quit">彻底退出</option>
           </select>
         </div>
+      </section>
+
+      <section className="card panel">
+        <div className="panel-head">
+          <h3>桌面便签</h3>
+          <button
+            className="ghost-button"
+            onClick={() => window.api.openSticky()}
+          >
+            <Icon name="pin" size={15} />
+            打开便签
+          </button>
+        </div>
+
+        <div className="settings-row">
+          <div className="settings-info">
+            <strong>便签内容</strong>
+            <span>
+              选择要显示在窄便签里的模块。便签始终置顶，与主界面数据实时同步，并跟随外观中的背景模糊与不透明度。
+            </span>
+          </div>
+        </div>
+
+        {STICKY_MODULE_OPTIONS.map((item) => (
+          <div className="settings-row" key={item.key}>
+            <div className="settings-info">
+              <strong>{item.label}</strong>
+              <span>{item.hint}</span>
+            </div>
+            <Switch
+              on={settings.stickyModules.includes(item.key)}
+              onChange={() => toggleStickyModule(item.key)}
+            />
+          </div>
+        ))}
       </section>
 
       <section className="card panel">

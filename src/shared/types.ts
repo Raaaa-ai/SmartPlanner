@@ -11,7 +11,7 @@ export type WindowAction = 'minimize' | 'toggle-maximize' | 'close'
 
 export type CloseAction = 'ask' | 'tray' | 'quit'
 
-export type EdgeSide = 'left' | 'right'
+export type StickyModule = 'tasks' | 'projects' | 'checkin' | 'courses'
 
 export type AnniversaryRepeat = 'yearly' | 'once'
 
@@ -181,6 +181,12 @@ export interface CaptureItem {
   createdAt: number
 }
 
+export interface CourseSlot {
+  weekday: Weekday
+  startTime: string
+  endTime: string
+}
+
 export interface Course {
   id: string
   name: string
@@ -189,6 +195,7 @@ export interface Course {
   weekday: Weekday
   startTime: string
   endTime: string
+  slots: CourseSlot[]
   weeks: string
   color: string
   note: string
@@ -203,6 +210,7 @@ export interface CourseInput {
   weekday?: Weekday
   startTime?: string
   endTime?: string
+  slots?: CourseSlot[]
   weeks?: string
   color?: string
   note?: string
@@ -218,9 +226,12 @@ export interface CoursePlan {
   weekday: Weekday
   startTime: string
   endTime: string
+  slots: CourseSlot[]
   weeks: string
   semester: CourseSemester
   status: CoursePlanStatus
+  credits: number
+  categoryId: string | null
   note: string
   color: string
   createdAt: number
@@ -234,11 +245,33 @@ export interface CoursePlanInput {
   weekday?: Weekday
   startTime?: string
   endTime?: string
+  slots?: CourseSlot[]
   weeks?: string
   semester?: CourseSemester
   status?: CoursePlanStatus
+  credits?: number
+  categoryId?: string | null
   note?: string
   color?: string
+}
+
+export interface CreditCategory {
+  id: string
+  name: string
+  earned: number
+  required: number
+  planned: number
+  note: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface CreditCategoryInput {
+  name: string
+  earned?: number
+  required?: number
+  planned?: number
+  note?: string
 }
 
 export type CoursePlanPatch = Partial<CoursePlanInput>
@@ -301,8 +334,7 @@ export interface Settings {
   fixedPosition: boolean
   windowCorner: WindowCorner
   sidebarCollapsed: boolean
-  edgeAutoHide: boolean
-  edgeSide: EdgeSide
+  stickyModules: StickyModule[]
   autoCheckUpdate: boolean
   dataDir: string
 }
@@ -320,8 +352,7 @@ export type SettingsPatch = Partial<
     | 'fixedPosition'
     | 'windowCorner'
     | 'sidebarCollapsed'
-    | 'edgeAutoHide'
-    | 'edgeSide'
+    | 'stickyModules'
     | 'autoCheckUpdate'
   >
 >
@@ -356,6 +387,7 @@ export interface Snapshot {
   coursePlans: CoursePlan[]
   checkins: Checkin[]
   checkinRecords: CheckinRecord[]
+  creditCategories: CreditCategory[]
   settings: Settings
   license: LicenseStatus
   version: string
@@ -410,11 +442,23 @@ export interface SmartPlannerApi {
     checkinId: string,
     date: string
   ) => Promise<{ checked: boolean; record: CheckinRecord | null } | null>
+  createCreditCategory: (
+    input: CreditCategoryInput
+  ) => Promise<CreditCategory | null>
+  updateCreditCategory: (
+    id: string,
+    patch: Partial<CreditCategoryInput>
+  ) => Promise<CreditCategory | null>
+  deleteCreditCategory: (id: string) => Promise<void>
   cleanupData: (kind: CleanupKind) => Promise<CleanupResult>
   getLicenseStatus: () => Promise<LicenseStatus>
   activateLicense: (code: string) => Promise<ActivationResult>
   quitApp: () => void
   copyText: (text: string) => Promise<void>
+  openSticky: () => void
+  closeSticky: () => void
+  openMain: () => void
+  onDataChanged: (callback: () => void) => () => void
   updateSettings: (patch: SettingsPatch) => Promise<Settings>
   chooseDataDir: () => Promise<Snapshot | null>
   useDefaultDataDir: () => Promise<Snapshot | null>
@@ -424,15 +468,10 @@ export interface SmartPlannerApi {
   openQuickCapture: () => void
   hideQuickCapture: () => void
   controlWindow: (action: WindowAction) => void
-  setEdgeVisible: (visible: boolean) => void
-  activateEdge: (key: string) => void
   checkForUpdates: () => Promise<UpdateStatus>
   installUpdate: () => void
   onCapture: (callback: (item: CaptureItem) => void) => () => void
   onUpdateStatus: (callback: (status: UpdateStatus) => void) => () => void
-  onEdgeState: (
-    callback: (state: { hidden: boolean; side: EdgeSide }) => void
-  ) => () => void
   onNavigate: (callback: (key: string) => void) => () => void
   platform: string
 }

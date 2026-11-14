@@ -51,8 +51,12 @@ export function TodayView(): React.JSX.Element {
 
   const weekday = new Date().getDay() === 0 ? 7 : new Date().getDay()
   const todaysCourses = courses
-    .filter((course) => course.weekday === weekday)
-    .sort((a, b) => a.startTime.localeCompare(b.startTime))
+    .flatMap((course) =>
+      course.slots
+        .filter((slot) => slot.weekday === weekday)
+        .map((slot) => ({ course, slot }))
+    )
+    .sort((a, b) => a.slot.startTime.localeCompare(b.slot.startTime))
   const todaysCheckins = [...checkins].sort((a, b) => a.createdAt - b.createdAt)
   const checkedToday = new Set(
     checkinRecords
@@ -249,8 +253,8 @@ export function TodayView(): React.JSX.Element {
             </div>
           ) : (
             <ul className="feed">
-              {todaysCourses.map((course) => (
-                <li key={course.id} className="feed-item">
+              {todaysCourses.map(({ course, slot }, index) => (
+                <li key={`${course.id}-${index}`} className="feed-item">
                   <span
                     className="feed-dot"
                     style={{ background: course.color }}
@@ -258,7 +262,7 @@ export function TodayView(): React.JSX.Element {
                   <div className="feed-body">
                     <div className="feed-title">{course.name}</div>
                     <div className="feed-text">
-                      {course.startTime} - {course.endTime}
+                      {slot.startTime} - {slot.endTime}
                       {course.location ? ` · ${course.location}` : ''}
                     </div>
                   </div>

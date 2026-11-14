@@ -17,7 +17,8 @@ import type {
   CoursePlan,
   CoursePlanInput,
   CoursePlanPatch,
-  EdgeSide,
+  CreditCategory,
+  CreditCategoryInput,
   LicenseStatus,
   Note,
   NoteInput,
@@ -116,6 +117,17 @@ const api: SmartPlannerApi = {
     date: string
   ): Promise<{ checked: boolean; record: CheckinRecord | null } | null> =>
     ipcRenderer.invoke('checkin:toggle', checkinId, date),
+  createCreditCategory: (
+    input: CreditCategoryInput
+  ): Promise<CreditCategory | null> =>
+    ipcRenderer.invoke('credit:create', input),
+  updateCreditCategory: (
+    id: string,
+    patch: Partial<CreditCategoryInput>
+  ): Promise<CreditCategory | null> =>
+    ipcRenderer.invoke('credit:update', id, patch),
+  deleteCreditCategory: (id: string): Promise<void> =>
+    ipcRenderer.invoke('credit:delete', id),
   cleanupData: (kind: CleanupKind): Promise<CleanupResult> =>
     ipcRenderer.invoke('data:cleanup', kind),
   getLicenseStatus: (): Promise<LicenseStatus> =>
@@ -137,9 +149,9 @@ const api: SmartPlannerApi = {
   hideQuickCapture: (): void => ipcRenderer.send('quick:hide'),
   controlWindow: (action: WindowAction): void =>
     ipcRenderer.send('window:control', action),
-  setEdgeVisible: (visible: boolean): void =>
-    ipcRenderer.send('window:edge', visible ? 'show' : 'hide'),
-  activateEdge: (key: string): void => ipcRenderer.send('edge:activate', key),
+  openSticky: (): void => ipcRenderer.send('sticky:open'),
+  closeSticky: (): void => ipcRenderer.send('sticky:close'),
+  openMain: (): void => ipcRenderer.send('main:show'),
   checkForUpdates: (): Promise<UpdateStatus> => ipcRenderer.invoke('update:check'),
   installUpdate: (): void => ipcRenderer.send('update:install'),
   onCapture: (callback) => {
@@ -163,16 +175,11 @@ const api: SmartPlannerApi = {
       ipcRenderer.removeListener('update:status', listener)
     }
   },
-  onEdgeState: (callback) => {
-    const listener = (
-      _event: Electron.IpcRendererEvent,
-      state: { hidden: boolean; side: EdgeSide }
-    ): void => {
-      callback(state)
-    }
-    ipcRenderer.on('window:edge-state', listener)
+  onDataChanged: (callback) => {
+    const listener = (): void => callback()
+    ipcRenderer.on('data:changed', listener)
     return () => {
-      ipcRenderer.removeListener('window:edge-state', listener)
+      ipcRenderer.removeListener('data:changed', listener)
     }
   },
   onNavigate: (callback) => {

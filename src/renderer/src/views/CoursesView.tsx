@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type {
   Course,
   CourseInput,
@@ -6,6 +6,9 @@ import type {
   CoursePlanInput,
   CoursePlanStatus,
   CourseSemester,
+  CourseSlot,
+  CreditCategory,
+  CreditCategoryInput,
   Weekday
 } from '../../../shared/types'
 import { Icon } from '../components/Icon'
@@ -55,6 +58,10 @@ function minuteLabel(minute: number): string {
   ).padStart(2, '0')}`
 }
 
+function addMinutes(time: string, minutes: number): string {
+  return minuteLabel(Math.min(24 * 60 - 1, toMinutes(time) + minutes))
+}
+
 function weekdayNumber(): Weekday {
   const day = new Date().getDay()
   return (day === 0 ? 7 : day) as Weekday
@@ -78,41 +85,266 @@ function durationText(start: string, end: string): string {
   return `${rest}分钟`
 }
 
-function conflictIds(courses: Course[]): Set<string> {
+function pad2(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+function slotKey(slot: CourseSlot, index: number): string {
+  return `${slot.weekday}-${slot.startTime}-${slot.endTime}-${index}`
+}
+
+interface GridCell {
+  boundaries: number[]
+  slotStarts: number[]
+  slotHeights: number[]
+  bodyHeight: number
+  timeLabels: { minute: number; top: number }[]
+  minuteToTop: Map<number, number>
+}
+
+function buildGrid(slots: CourseSlot[]): GridCell {
+  if (slots.length === 0) {
+    return {
+      boundaries: [],
+      slotStarts: [],
+      slotHeights: [],
+      bodyHeight: 0,
+      timeLabels: [],
+      minuteToTop: new Map()
+    }
+  }
+
+  const starts = slots.map((slot) => toMinutes(slot.startTime))
+  const ends = slots.map((slot) => toMinutes(slot.endTime))
+  const min = Math.floor(Math.min(...starts) / 60) * 60
+  const max = Math.ceil(Math.max(...ends) / 60) * 60
+
+  const boundarySet = new Set<number>([min, max])
+  for (const slot of slots) {
+    boundarySet.add(toMinutes(slot.startTime))
+    boundarySet.add(toMinutes(slot.endTime))
+  }
+
+  const boundaries = [...boundarySet].sort((a, b) => a - b)
+  const slotHeights: number[] = []
+
+  for (let index = 0; index < boundaries.length - 1; index += 1) {
+    const start = boundaries[index]
+    const end = boundaries[index + 1]
+    const hasCourse = slots.some((slot) => {
+      const slotStart = toMinutes(slot.startTime)
+      const slotEnd = toMinutes(slot.endTime)
+      return slotStart < end && slotEnd > start
+    })
+    slotHeights.push(
+      hasCourse
+        ? Math.max(MIN_COURSE_SLOT_HEIGHT, (end - start) * MINUTE_HEIGHT)
+        : EMPTY_GAP_HEIGHT
+    )
+  }
+
+  const slotStarts: number[] = []
+  let total = 0
+  for (const height of slotHeights) {
+    slotStarts.push(total)
+    total += height
+  }
+  slotStarts.push(total)
+
+  const timeLabels: { minute: number; top: number }[] = []
+  let lastTop = -Infinity
+  boundaries.forEach((minute, index) => {
+    if (index === boundaries.length - 1) return
+    const top = slotStarts[index]
+    if (
+      slotHeights[index] > EMPTY_GAP_HEIGHT &&
+      (timeLabels.length === 0 || top - lastTop >= 18)
+    ) {
+      timeLabels.push({ minute, top })
+      lastTop = top
+    }
+  })
+  if (timeLabels.length === 0 || total - lastTop >= 18) {
+    timeLabels.push({
+      minute: boundaries[boundaries.length - 1],
+      top: total
+    })
+  }
+
+  const minuteToTop = new Map<number, number>()
+  boundaries.forEach((minute, index) => {
+    minuteToTop.set(minute, slotStarts[index])
+  })
+
+  return {
+    boundaries,
+    slotStarts,
+    slotHeights,
+    bodyHeight: total,
+    timeLabels,
+    minuteToTop
+  }
+}
+
+function conflictSlotKeys(
+  entries: { key: string; slot: CourseSlot }[]
+): Set<string> {
   const ids = new Set<string>()
-  for (let i = 0; i < courses.length; i += 1) {
-    for (let j = i + 1; j < courses.length; j += 1) {
-      const a = courses[i]
-      const b = courses[j]
+  for (let i = 0; i < entries.length; i += 1) {
+    for (let j = i + 1; j < entries.length; j += 1) {
+      const a = entries[i]
+      const b = entries[j]
       if (
-        a.weekday === b.weekday &&
-        toMinutes(a.startTime) < toMinutes(b.endTime) &&
-        toMinutes(a.endTime) > toMinutes(b.startTime)
+        a.slot.weekday === b.slot.weekday &&
+        toMinutes(a.slot.startTime) < toMinutes(b.slot.endTime) &&
+        toMinutes(a.slot.endTime) > toMinutes(b.slot.startTime)
       ) {
-        ids.add(a.id)
-        ids.add(b.id)
+        ids.add(a.key)
+        ids.add(b.key)
       }
     }
   }
   return ids
 }
 
-function nextCourse(courses: Course[]): { course: Course; day: Weekday } | null {
+function nextCourse(
+  courses: Course[]
+): { course: Course; slot: CourseSlot; day: Weekday } | null {
   const today = weekdayNumber()
   const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes()
+  const entries = courses.flatMap((course) =>
+    course.slots.map((slot) => ({ course, slot }))
+  )
 
   for (let offset = 0; offset < 7; offset += 1) {
     const day = (((today - 1 + offset) % 7) + 1) as Weekday
-    const candidates = courses
+    const candidates = entries
       .filter(
-        (course) =>
-          course.weekday === day &&
-          (offset > 0 || toMinutes(course.endTime) > nowMinutes)
+        (entry) =>
+          entry.slot.weekday === day &&
+          (offset > 0 || toMinutes(entry.slot.endTime) > nowMinutes)
       )
-      .sort((a, b) => a.startTime.localeCompare(b.startTime))
-    if (candidates[0]) return { course: candidates[0], day }
+      .sort((a, b) => a.slot.startTime.localeCompare(b.slot.startTime))
+    if (candidates[0]) return { ...candidates[0], day }
   }
   return null
+}
+
+function CreditRow({
+  category,
+  onUpdate,
+  onDelete
+}: {
+  category: CreditCategory
+  onUpdate: (
+    id: string,
+    patch: Partial<CreditCategoryInput>
+  ) => Promise<CreditCategory | null>
+  onDelete: (id: string) => Promise<void>
+}): React.JSX.Element {
+  const [name, setName] = useState(category.name)
+  const [earned, setEarned] = useState(String(category.earned))
+  const [required, setRequired] = useState(String(category.required))
+  const [planned, setPlanned] = useState(String(category.planned))
+  const [note, setNote] = useState(category.note)
+
+  useEffect(() => {
+    setName(category.name)
+    setEarned(String(category.earned))
+    setRequired(String(category.required))
+    setPlanned(String(category.planned))
+    setNote(category.note)
+  }, [category.id, category.updatedAt])
+
+  function save(): void {
+    void onUpdate(category.id, {
+      name: name.trim() || category.name,
+      earned: Number(earned) || 0,
+      required: Number(required) || 0,
+      planned: Number(planned) || 0,
+      note
+    })
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent): void {
+    if (event.key === 'Enter') {
+      ;(event.currentTarget as HTMLElement).blur()
+    }
+  }
+
+  return (
+    <tr>
+      <td>
+        <input
+          className="credit-input"
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          onBlur={save}
+          onKeyDown={handleKeyDown}
+        />
+      </td>
+      <td>
+        <input
+          className="credit-input credit-number"
+          type="number"
+          step="0.5"
+          min={0}
+          value={earned}
+          onChange={(event) => setEarned(event.target.value)}
+          onBlur={save}
+          onKeyDown={handleKeyDown}
+        />
+      </td>
+      <td>
+        <input
+          className="credit-input credit-number"
+          type="number"
+          step="0.5"
+          min={0}
+          value={required}
+          onChange={(event) => setRequired(event.target.value)}
+          onBlur={save}
+          onKeyDown={handleKeyDown}
+        />
+      </td>
+      <td>
+        <input
+          className="credit-input credit-number"
+          type="number"
+          step="0.5"
+          min={0}
+          value={planned}
+          onChange={(event) => setPlanned(event.target.value)}
+          onBlur={save}
+          onKeyDown={handleKeyDown}
+        />
+      </td>
+      <td>
+        <input
+          className="credit-input"
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+          onBlur={save}
+          onKeyDown={handleKeyDown}
+          placeholder="备注"
+        />
+      </td>
+      <td>
+        <button
+          type="button"
+          className="icon-button tiny"
+          title="删除类别"
+          onClick={() => {
+            if (window.confirm(`确定删除「${category.name}」吗？`)) {
+              void onDelete(category.id)
+            }
+          }}
+        >
+          <Icon name="trash" size={13} />
+        </button>
+      </td>
+    </tr>
+  )
 }
 
 function CourseEditorModal({
@@ -135,17 +367,27 @@ function CourseEditorModal({
     updateCourse,
     deleteCourse,
     createCoursePlan,
-    updateCoursePlan
+    updateCoursePlan,
+    deleteCoursePlan,
+    promoteCoursePlan,
+    creditCategories
   } = useWorkspace()
   const source = course ?? plan
+  const initialSlots =
+    source?.slots && source.slots.length > 0
+      ? source.slots
+      : [
+          {
+            weekday: source?.weekday ?? defaultWeekday ?? 1,
+            startTime: source?.startTime ?? '08:00',
+            endTime: source?.endTime ?? '09:30'
+          }
+        ]
+
   const [name, setName] = useState(source?.name ?? '')
   const [teacher, setTeacher] = useState(source?.teacher ?? '')
   const [location, setLocation] = useState(source?.location ?? '')
-  const [weekday, setWeekday] = useState<Weekday>(
-    source?.weekday ?? defaultWeekday ?? 1
-  )
-  const [startTime, setStartTime] = useState(source?.startTime ?? '08:00')
-  const [endTime, setEndTime] = useState(source?.endTime ?? '09:30')
+  const [slots, setSlots] = useState<CourseSlot[]>(initialSlots)
   const [weeks, setWeeks] = useState(source?.weeks ?? '1-16周')
   const [color, setColor] = useState(source?.color ?? COURSE_COLORS[0])
   const [note, setNote] = useState(source?.note ?? '')
@@ -155,9 +397,41 @@ function CourseEditorModal({
   const [status, setStatus] = useState<CoursePlanStatus>(
     plan?.status ?? 'considering'
   )
+  const [credits, setCredits] = useState(String(plan?.credits ?? 0))
+  const [categoryId, setCategoryId] = useState(plan?.categoryId ?? '')
   const [saving, setSaving] = useState(false)
 
-  const invalidTime = !startTime || !endTime || startTime >= endTime
+  const invalidSlots =
+    slots.length === 0 ||
+    slots.some(
+      (slot) =>
+        !slot.startTime || !slot.endTime || slot.startTime >= slot.endTime
+    )
+
+  function updateSlot(index: number, patch: Partial<CourseSlot>): void {
+    setSlots((prev) =>
+      prev.map((slot, slotIndex) =>
+        slotIndex === index ? { ...slot, ...patch } : slot
+      )
+    )
+  }
+
+  function addSlot(): void {
+    const last = slots[slots.length - 1]
+    const start = last ? last.endTime : '08:00'
+    setSlots((prev) => [
+      ...prev,
+      {
+        weekday: last?.weekday ?? defaultWeekday ?? weekdayNumber(),
+        startTime: start,
+        endTime: addMinutes(start, 90)
+      }
+    ])
+  }
+
+  function removeSlot(index: number): void {
+    setSlots((prev) => prev.filter((_, slotIndex) => slotIndex !== index))
+  }
 
   async function handleDelete(): Promise<void> {
     if (!course) return
@@ -166,18 +440,29 @@ function CourseEditorModal({
     onClose()
   }
 
+  async function handlePromote(): Promise<void> {
+    if (!plan) return
+    await promoteCoursePlan(plan.id)
+    onClose()
+  }
+
+  async function handleDeletePlan(): Promise<void> {
+    if (!plan) return
+    if (!window.confirm(`确定删除选课计划「${plan.name}」吗？`)) return
+    await deleteCoursePlan(plan.id)
+    onClose()
+  }
+
   async function handleSubmit(event: React.FormEvent): Promise<void> {
     event.preventDefault()
-    if (!name.trim() || invalidTime || saving) return
+    if (!name.trim() || invalidSlots || saving) return
 
     setSaving(true)
     const input: CourseInput = {
       name: name.trim(),
       teacher,
       location,
-      weekday,
-      startTime,
-      endTime,
+      slots,
       weeks,
       color,
       note
@@ -187,7 +472,13 @@ function CourseEditorModal({
       if (course) await updateCourse(course.id, input)
       else await createCourse(input)
     } else {
-      const planInput: CoursePlanInput = { ...input, semester, status }
+      const planInput: CoursePlanInput = {
+        ...input,
+        semester,
+        status,
+        credits: Number(credits) || 0,
+        categoryId: categoryId || null
+      }
       if (plan) await updateCoursePlan(plan.id, planInput)
       else await createCoursePlan(planInput)
     }
@@ -255,24 +546,70 @@ function CourseEditorModal({
             </div>
           </div>
 
-          <div className="row">
-            <div className="field">
-              <label htmlFor="course-weekday">星期</label>
-              <select
-                id="course-weekday"
-                className="select"
-                value={weekday}
-                onChange={(event) =>
-                  setWeekday(Number(event.target.value) as Weekday)
-                }
+          <div className="field">
+            <label>上课时间（可添加多个不连续时间段）</label>
+            <div className="slot-editor">
+              {slots.map((slot, index) => (
+                <div className="slot-row" key={index}>
+                  <select
+                    className="select"
+                    value={slot.weekday}
+                    onChange={(event) =>
+                      updateSlot(index, {
+                        weekday: Number(event.target.value) as Weekday
+                      })
+                    }
+                  >
+                    {WEEKDAYS.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    className="input"
+                    type="time"
+                    value={slot.startTime}
+                    onChange={(event) =>
+                      updateSlot(index, { startTime: event.target.value })
+                    }
+                  />
+                  <span className="slot-sep">-</span>
+                  <input
+                    className="input"
+                    type="time"
+                    value={slot.endTime}
+                    onChange={(event) =>
+                      updateSlot(index, { endTime: event.target.value })
+                    }
+                  />
+                  <button
+                    type="button"
+                    className="icon-button tiny"
+                    title="删除这个时间段"
+                    onClick={() => removeSlot(index)}
+                  >
+                    <Icon name="trash" size={13} />
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                className="ghost-button slot-add"
+                onClick={addSlot}
               >
-                {WEEKDAYS.map((item) => (
-                  <option key={item.value} value={item.value}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
+                <Icon name="plus" size={14} />
+                添加时间段
+              </button>
             </div>
+            {invalidSlots && (
+              <p className="hint danger-text">
+                至少保留一个时间段，并确保结束时间晚于开始时间。
+              </p>
+            )}
+          </div>
+
+          <div className="row">
             <div className="field">
               <label htmlFor="course-weeks">周次</label>
               <input
@@ -283,30 +620,78 @@ function CourseEditorModal({
                 placeholder="例如：1-16周"
               />
             </div>
+            {mode === 'plan' && (
+              <div className="field">
+                <label htmlFor="plan-semester">学期</label>
+                <select
+                  id="plan-semester"
+                  className="select"
+                  value={semester}
+                  onChange={(event) =>
+                    setSemester(event.target.value as CourseSemester)
+                  }
+                >
+                  <option value="fall">秋季学期</option>
+                  <option value="spring">春季学期</option>
+                </select>
+              </div>
+            )}
           </div>
 
-          <div className="row">
-            <div className="field">
-              <label htmlFor="course-start">开始时间</label>
-              <input
-                id="course-start"
-                className="input"
-                type="time"
-                value={startTime}
-                onChange={(event) => setStartTime(event.target.value)}
-              />
+          {mode === 'plan' && (
+            <div className="row">
+              <div className="field">
+                <label htmlFor="plan-status">状态</label>
+                <select
+                  id="plan-status"
+                  className="select"
+                  value={status}
+                  onChange={(event) =>
+                    setStatus(event.target.value as CoursePlanStatus)
+                  }
+                >
+                  <option value="considering">考虑中</option>
+                  <option value="selected">已选</option>
+                  <option value="dropped">已放弃</option>
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="plan-credits">课程学分</label>
+                <input
+                  id="plan-credits"
+                  className="input"
+                  type="number"
+                  min={0}
+                  max={100}
+                  step="0.5"
+                  value={credits}
+                  onChange={(event) => setCredits(event.target.value)}
+                />
+              </div>
             </div>
+          )}
+
+          {mode === 'plan' && (
             <div className="field">
-              <label htmlFor="course-end">结束时间</label>
-              <input
-                id="course-end"
-                className="input"
-                type="time"
-                value={endTime}
-                onChange={(event) => setEndTime(event.target.value)}
-              />
+              <label htmlFor="plan-category">学分类别</label>
+              <select
+                id="plan-category"
+                className="select"
+                value={categoryId}
+                onChange={(event) => setCategoryId(event.target.value)}
+              >
+                <option value="">未分类</option>
+                {creditCategories.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.name}
+                  </option>
+                ))}
+              </select>
+              <p className="hint">
+                课程学分只作参考；底部学分登记表由你手动填写，不自动汇总。
+              </p>
             </div>
-          </div>
+          )}
 
           <div className="field">
             <label>颜色</label>
@@ -324,45 +709,6 @@ function CourseEditorModal({
             </div>
           </div>
 
-          {mode === 'plan' && (
-            <>
-              <div className="row">
-                <div className="field">
-                  <label htmlFor="plan-semester">学期</label>
-                  <select
-                    id="plan-semester"
-                    className="select"
-                    value={semester}
-                    onChange={(event) =>
-                      setSemester(event.target.value as CourseSemester)
-                    }
-                  >
-                    <option value="fall">秋季学期</option>
-                    <option value="spring">春季学期</option>
-                  </select>
-                </div>
-                <div className="field">
-                  <label htmlFor="plan-status">状态</label>
-                  <select
-                    id="plan-status"
-                    className="select"
-                    value={status}
-                    onChange={(event) =>
-                      setStatus(event.target.value as CoursePlanStatus)
-                    }
-                  >
-                    <option value="considering">考虑中</option>
-                    <option value="selected">已选</option>
-                    <option value="dropped">已放弃</option>
-                  </select>
-                </div>
-              </div>
-              <p className="hint">
-                选课计划允许时间冲突，方便同时比较多个方案；只有加入课表后才会在课表中显示冲突提示。
-              </p>
-            </>
-          )}
-
           <div className="field">
             <label htmlFor="course-note">备注</label>
             <textarea
@@ -374,9 +720,9 @@ function CourseEditorModal({
             />
           </div>
 
-          {invalidTime && (
-            <p className="hint danger-text">
-              请填写开始和结束时间，并确保结束时间晚于开始时间。
+          {mode === 'plan' && (
+            <p className="hint">
+              选课计划允许时间冲突，冲突课程会在下方表格的同一时段上下排列。
             </p>
           )}
         </div>
@@ -392,13 +738,34 @@ function CourseEditorModal({
               删除课程
             </button>
           )}
+          {mode === 'plan' && plan && (
+            <div className="action-left">
+              {plan.status !== 'selected' && (
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => void handlePromote()}
+                >
+                  加入当前课表
+                </button>
+              )}
+              <button
+                type="button"
+                className="ghost-button danger-text"
+                onClick={() => void handleDeletePlan()}
+              >
+                <Icon name="trash" size={15} />
+                删除计划
+              </button>
+            </div>
+          )}
           <button type="button" className="ghost-button" onClick={onClose}>
             取消
           </button>
           <button
             className="primary-button"
             type="submit"
-            disabled={!name.trim() || invalidTime || saving}
+            disabled={!name.trim() || invalidSlots || saving}
           >
             {saving ? '保存中…' : '保存'}
           </button>
@@ -416,15 +783,52 @@ export function CoursesView(): React.JSX.Element {
   const {
     courses,
     coursePlans,
-    deleteCourse,
-    deleteCoursePlan,
-    promoteCoursePlan
+    creditCategories,
+    deleteCreditCategory,
+    updateCreditCategory,
+    createCreditCategory
   } = useWorkspace()
   const [tab, setTab] = useState<'week' | 'plan'>('week')
   const [editor, setEditor] = useState<EditorState | null>(null)
-  const [planSemester, setPlanSemester] = useState<CourseSemester>(currentSemester)
+  const [planSemester, setPlanSemester] =
+    useState<CourseSemester>(currentSemester)
 
   const today = weekdayNumber()
+  const flattened = useMemo(
+    () =>
+      courses.flatMap((course) =>
+        course.slots.map((slot, index) => ({
+          course,
+          slot,
+          key: `${course.id}-${slotKey(slot, index)}`
+        }))
+      ),
+    [courses]
+  )
+  const conflicts = useMemo(
+    () => conflictSlotKeys(flattened.map(({ key, slot }) => ({ key, slot }))),
+    [flattened]
+  )
+  const next = useMemo(() => nextCourse(courses), [courses])
+  const todaysCourses = courses.filter((course) =>
+    course.slots.some((slot) => slot.weekday === today)
+  )
+  const totalMinutes = courses.reduce(
+    (sum, course) =>
+      sum +
+      course.slots.reduce(
+        (slotSum, slot) =>
+          slotSum + Math.max(0, toMinutes(slot.endTime) - toMinutes(slot.startTime)),
+        0
+      ),
+    0
+  )
+
+  const grid = useMemo(
+    () => buildGrid(flattened.map(({ slot }) => slot)),
+    [flattened]
+  )
+
   const visiblePlans = coursePlans.filter(
     (plan) => plan.semester === planSemester
   )
@@ -434,109 +838,50 @@ export function CoursesView(): React.JSX.Element {
   const springPlanCount = coursePlans.filter(
     (plan) => plan.semester === 'spring'
   ).length
-  const conflicts = useMemo(() => conflictIds(courses), [courses])
-  const next = useMemo(() => nextCourse(courses), [courses])
-  const todaysCourses = courses.filter((course) => course.weekday === today)
-  const totalMinutes = courses.reduce(
-    (sum, course) =>
-      sum + Math.max(0, toMinutes(course.endTime) - toMinutes(course.startTime)),
-    0
+
+  const planSlots = useMemo(
+    () =>
+      visiblePlans.flatMap((plan) =>
+        plan.slots.map((slot, index) => ({
+          plan,
+          slot,
+          key: `${plan.id}-${slotKey(slot, index)}`
+        }))
+      ),
+    [visiblePlans]
   )
 
-  const grid = useMemo(() => {
-    if (courses.length === 0) {
+  const planGrid = useMemo(
+    () => buildGrid(planSlots.map(({ slot }) => slot)),
+    [planSlots]
+  )
+
+  const planRows = useMemo(() => {
+    return planGrid.boundaries.slice(0, -1).map((start, index) => {
+      const end = planGrid.boundaries[index + 1]
+      const cells = WEEKDAYS.map((day) => ({
+        day: day.value,
+        items: planSlots.filter(
+          (entry) =>
+            entry.slot.weekday === day.value &&
+            toMinutes(entry.slot.startTime) < end &&
+            toMinutes(entry.slot.endTime) > start
+        )
+      }))
       return {
-        boundaries: [] as number[],
-        slotStarts: [] as number[],
-        bodyHeight: 0,
-        timeLabels: [] as { minute: number; top: number }[],
-        minuteToTop: new Map<number, number>()
+        start,
+        end,
+        height: planGrid.slotHeights[index],
+        cells
       }
-    }
+    }).filter((row) => row.cells.some((cell) => cell.items.length > 0))
+  }, [planGrid, planSlots])
 
-    const starts = courses.map((course) => toMinutes(course.startTime))
-    const ends = courses.map((course) => toMinutes(course.endTime))
-    const min = Math.floor(Math.min(...starts) / 60) * 60
-    const max = Math.ceil(Math.max(...ends) / 60) * 60
-
-    const boundarySet = new Set<number>([min, max])
-    for (const course of courses) {
-      boundarySet.add(toMinutes(course.startTime))
-      boundarySet.add(toMinutes(course.endTime))
-    }
-
-    const boundaries = [...boundarySet].sort((a, b) => a - b)
-    const slotHeights: number[] = []
-
-    for (let index = 0; index < boundaries.length - 1; index += 1) {
-      const start = boundaries[index]
-      const end = boundaries[index + 1]
-      const hasCourse = courses.some((course) => {
-        const courseStart = toMinutes(course.startTime)
-        const courseEnd = toMinutes(course.endTime)
-        return courseStart < end && courseEnd > start
-      })
-      slotHeights.push(
-        hasCourse
-          ? Math.max(
-              MIN_COURSE_SLOT_HEIGHT,
-              (end - start) * MINUTE_HEIGHT
-            )
-          : EMPTY_GAP_HEIGHT
-      )
-    }
-
-    const slotStarts: number[] = []
-    let total = 0
-    for (const height of slotHeights) {
-      slotStarts.push(total)
-      total += height
-    }
-    slotStarts.push(total)
-
-    const timeLabels: { minute: number; top: number }[] = []
-    let lastTop = -Infinity
-    boundaries.forEach((minute, index) => {
-      if (index === boundaries.length - 1) return
-      const top = slotStarts[index]
-      if (
-        slotHeights[index] > EMPTY_GAP_HEIGHT &&
-        (timeLabels.length === 0 || top - lastTop >= 18)
-      ) {
-        timeLabels.push({ minute, top })
-        lastTop = top
-      }
-    })
-    if (timeLabels.length === 0 || total - lastTop >= 18) {
-      timeLabels.push({
-        minute: boundaries[boundaries.length - 1],
-        top: total
-      })
-    }
-
-    const minuteToTop = new Map<number, number>()
-    boundaries.forEach((minute, index) => {
-      minuteToTop.set(minute, slotStarts[index])
-    })
-
-    return {
-      boundaries,
-      slotStarts,
-      bodyHeight: total,
-      timeLabels,
-      minuteToTop
-    }
-  }, [courses])
-
-  function removeCourse(course: Course): void {
-    if (!window.confirm(`确定删除课程「${course.name}」吗？`)) return
-    void deleteCourse(course.id)
-  }
-
-  function removePlan(plan: CoursePlan): void {
-    if (!window.confirm(`确定删除选课计划「${plan.name}」吗？`)) return
-    void deleteCoursePlan(plan.id)
-  }
+  const categoryName = (id: string | null): string =>
+    id
+      ? creditCategories.find((category) => category.id === id)?.name ??
+        '未分类'
+      : '未分类'
 
   return (
     <div className="courses-page">
@@ -565,9 +910,7 @@ export function CoursesView(): React.JSX.Element {
           </button>
           <button
             className="primary-button"
-            onClick={() =>
-              setEditor({ mode: 'course', course: undefined })
-            }
+            onClick={() => setEditor({ mode: 'course' })}
           >
             <Icon name="plus" size={16} />
             添加课程
@@ -602,7 +945,14 @@ export function CoursesView(): React.JSX.Element {
               </span>
               <div>
                 <div className="stat-label">每周课时</div>
-                <div className="stat-value">{durationText('00:00', `${String(Math.floor(totalMinutes / 60)).padStart(2, '0')}:${String(totalMinutes % 60).padStart(2, '0')}`)}</div>
+                <div className="stat-value">
+                  {durationText(
+                    '00:00',
+                    `${pad2(Math.floor(totalMinutes / 60))}:${pad2(
+                      totalMinutes % 60
+                    )}`
+                  )}
+                </div>
               </div>
             </div>
             <div className="stat-card card">
@@ -631,7 +981,7 @@ export function CoursesView(): React.JSX.Element {
                   <strong>{next.course.name}</strong>
                   <span>
                     {next.day === today ? '今天' : weekdayLabel(next.day)} ·{' '}
-                    {next.course.startTime} - {next.course.endTime}
+                    {next.slot.startTime} - {next.slot.endTime}
                     {next.course.location ? ` · ${next.course.location}` : ''}
                   </span>
                 </div>
@@ -737,13 +1087,11 @@ export function CoursesView(): React.JSX.Element {
                         />
                       ))}
 
-                      {courses.map((course) => {
+                      {flattened.map(({ course, slot, key }) => {
                         const top =
-                          grid.minuteToTop.get(toMinutes(course.startTime)) ??
-                          0
+                          grid.minuteToTop.get(toMinutes(slot.startTime)) ?? 0
                         const bottom =
-                          grid.minuteToTop.get(toMinutes(course.endTime)) ??
-                          top
+                          grid.minuteToTop.get(toMinutes(slot.endTime)) ?? top
                         const height = Math.max(
                           MIN_COURSE_SLOT_HEIGHT - 4,
                           bottom - top - 4
@@ -757,7 +1105,7 @@ export function CoursesView(): React.JSX.Element {
                               : 'timetable-course-name'
                         return (
                           <button
-                            key={course.id}
+                            key={key}
                             className={
                               compact
                                 ? 'timetable-course compact'
@@ -766,26 +1114,26 @@ export function CoursesView(): React.JSX.Element {
                             style={{
                               top,
                               height,
-                              left: `${((course.weekday - 1) * 100) / 7}%`,
+                              left: `${((slot.weekday - 1) * 100) / 7}%`,
                               width: `${100 / 7}%`,
                               ['--course-color' as string]: course.color
                             }}
                             onClick={() =>
                               setEditor({ mode: 'course', course })
                             }
-                            title={`${course.name} ${course.startTime}-${course.endTime}${course.location ? ` · ${course.location}` : ''}`}
+                            title={`${course.name} ${slot.startTime}-${slot.endTime}${course.location ? ` · ${course.location}` : ''}`}
                           >
                             <span className="timetable-course-inner">
                               <span className={nameClass}>
                                 {course.name}
-                                {conflicts.has(course.id) && (
+                                {conflicts.has(key) && (
                                   <i className="course-conflict">冲突</i>
                                 )}
                               </span>
                               {!compact && (
                                 <>
                                   <span className="timetable-course-time">
-                                    {course.startTime} - {course.endTime}
+                                    {slot.startTime} - {slot.endTime}
                                   </span>
                                   {course.location && (
                                     <span className="timetable-course-place">
@@ -806,117 +1154,161 @@ export function CoursesView(): React.JSX.Element {
           </section>
         </>
       ) : (
-        <section className="card panel">
-          <div className="panel-head plan-head">
-            <div className="plan-head-copy">
-              <h3>选课计划</h3>
-              <span className="muted">
-                {SEMESTER_LABEL[planSemester]} · {SEMESTER_HINT[planSemester]} ·
-                允许时间冲突
-              </span>
-            </div>
-            <div className="segmented">
-              <button
-                className={
-                  planSemester === 'fall' ? 'segment active' : 'segment'
-                }
-                onClick={() => setPlanSemester('fall')}
-              >
-                秋季学期 {fallPlanCount}
-              </button>
-              <button
-                className={
-                  planSemester === 'spring' ? 'segment active' : 'segment'
-                }
-                onClick={() => setPlanSemester('spring')}
-              >
-                春季学期 {springPlanCount}
-              </button>
-            </div>
-          </div>
-
-          {visiblePlans.length === 0 ? (
-            <div className="empty-state large">
-              <span className="empty-icon">
-                <Icon name="target" size={24} />
-              </span>
-              <div>
-                <strong>{SEMESTER_LABEL[planSemester]}还没有选课计划</strong>
-                <p>
-                  把想选的课先记下来，允许设置冲突时间，方便比较不同方案。
-                </p>
+        <div className="stack">
+          <section className="card panel">
+            <div className="panel-head plan-head">
+              <div className="plan-head-copy">
+                <h3>选课计划表</h3>
+                <span className="muted">
+                  {SEMESTER_LABEL[planSemester]} · {SEMESTER_HINT[planSemester]} ·
+                  冲突课程上下排列
+                </span>
               </div>
-              <button
-                className="primary-button"
-                onClick={() => setEditor({ mode: 'plan' })}
-              >
-                <Icon name="plus" size={16} />
-                添加{SEMESTER_LABEL[planSemester]}计划
-              </button>
+              <div className="segmented">
+                <button
+                  className={
+                    planSemester === 'fall' ? 'segment active' : 'segment'
+                  }
+                  onClick={() => setPlanSemester('fall')}
+                >
+                  秋季学期 {fallPlanCount}
+                </button>
+                <button
+                  className={
+                    planSemester === 'spring' ? 'segment active' : 'segment'
+                  }
+                  onClick={() => setPlanSemester('spring')}
+                >
+                  春季学期 {springPlanCount}
+                </button>
+              </div>
             </div>
-          ) : (
-            <div className="course-plan-grid">
-              {visiblePlans.map((plan) => (
-                <article className="course-plan-card" key={plan.id}>
+
+            {visiblePlans.length === 0 ? (
+              <div className="empty-state large">
+                <span className="empty-icon">
+                  <Icon name="target" size={24} />
+                </span>
+                <div>
+                  <strong>{SEMESTER_LABEL[planSemester]}还没有选课计划</strong>
+                  <p>添加未来想选的课程，允许设置多个时间段和冲突时间。</p>
+                </div>
+                <button
+                  className="primary-button"
+                  onClick={() => setEditor({ mode: 'plan' })}
+                >
+                  <Icon name="plus" size={16} />
+                  添加计划
+                </button>
+              </div>
+            ) : (
+              <div className="plan-table">
+                <div className="plan-table-head">
+                  <div>时间</div>
+                  {WEEKDAYS.map((day) => (
+                    <div key={day.value}>{day.label}</div>
+                  ))}
+                </div>
+                {planRows.map((row, rowIndex) => (
                   <div
-                    className="course-plan-color"
-                    style={{ background: plan.color }}
-                  />
-                  <div className="course-plan-body">
-                    <div className="course-plan-head">
-                      <strong>{plan.name}</strong>
-                      <div className="course-plan-tags">
-                        <span className={`semester-chip ${plan.semester}`}>
-                          {SEMESTER_LABEL[plan.semester]}
-                        </span>
-                        <span className={`plan-status ${plan.status}`}>
-                          {PLAN_STATUS_LABEL[plan.status]}
-                        </span>
+                    className="plan-table-row"
+                    key={`${row.start}-${rowIndex}`}
+                    style={{ minHeight: Math.max(30, row.height) }}
+                  >
+                    <div className="plan-time-cell">
+                      {minuteLabel(row.start)}
+                      <span>{minuteLabel(row.end)}</span>
+                    </div>
+                    {row.cells.map((cell) => (
+                      <div className="plan-cell" key={cell.day}>
+                        {cell.items.map(({ plan, slot, key }) => (
+                          <button
+                            key={key}
+                            type="button"
+                            className="plan-chip"
+                            style={{
+                              ['--plan-color' as string]: plan.color
+                            }}
+                            onClick={() =>
+                              setEditor({ mode: 'plan', plan })
+                            }
+                            title={`${plan.name} ${slot.startTime}-${slot.endTime}`}
+                          >
+                            <span className="plan-chip-name">
+                              {plan.name}
+                              {plan.status === 'selected' && (
+                                <i>已选</i>
+                              )}
+                            </span>
+                            <span className="plan-chip-meta">
+                              {slot.startTime} - {slot.endTime}
+                              {plan.credits ? ` · ${plan.credits} 学分` : ''}
+                              {` · ${categoryName(plan.categoryId)}`}
+                            </span>
+                          </button>
+                        ))}
                       </div>
-                    </div>
-                    <div className="course-plan-meta">
-                      <span>
-                        <Icon name="calendar" size={13} />
-                        {weekdayLabel(plan.weekday)} {plan.startTime} -{' '}
-                        {plan.endTime}
-                      </span>
-                      {plan.location && (
-                        <span>
-                          <Icon name="location" size={13} />
-                          {plan.location}
-                        </span>
-                      )}
-                      {plan.teacher && <span>{plan.teacher}</span>}
-                      {plan.weeks && <span>{plan.weeks}</span>}
-                    </div>
-                    {plan.note && <p className="course-plan-note">{plan.note}</p>}
-                    <div className="course-plan-actions">
-                      <button
-                        className="ghost-button"
-                        onClick={() => setEditor({ mode: 'plan', plan })}
-                      >
-                        编辑
-                      </button>
-                      <button
-                        className="ghost-button"
-                        disabled={plan.status === 'selected'}
-                        onClick={() => void promoteCoursePlan(plan.id)}
-                      >
-                        {plan.status === 'selected' ? '已加入课表' : '加入课表'}
-                      </button>
-                      <button
-                        className="ghost-button danger-text"
-                        onClick={() => removePlan(plan)}
-                      >
-                        删除
-                      </button>
-                    </div>
+                    ))}
                   </div>
-                </article>
-              ))}
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="card panel">
+            <div className="panel-head">
+              <h3>学分登记</h3>
+              <div className="panel-head-actions">
+                <span className="muted">手动填写，不做自动计算</span>
+                <button
+                  className="ghost-button"
+                  onClick={() =>
+                    void createCreditCategory({
+                      name: '新类别',
+                      earned: 0,
+                      required: 0,
+                      planned: 0,
+                      note: ''
+                    })
+                  }
+                >
+                  <Icon name="plus" size={14} />
+                  添加类别
+                </button>
+              </div>
             </div>
-          )}
-        </section>
+
+            <div className="credit-table-wrap">
+              <table className="credit-table">
+                <thead>
+                  <tr>
+                    <th>类别</th>
+                    <th>已修</th>
+                    <th>需要</th>
+                    <th>计划中</th>
+                    <th>备注</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {creditCategories.map((category) => (
+                    <CreditRow
+                      key={category.id}
+                      category={category}
+                      onUpdate={updateCreditCategory}
+                      onDelete={deleteCreditCategory}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {creditCategories.length === 0 && (
+              <p className="hint">
+                还没有学分类别，点击「添加类别」开始登记。
+              </p>
+            )}
+          </section>
+        </div>
       )}
 
       {editor && (

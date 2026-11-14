@@ -22,7 +22,8 @@ import type {
   CoursePlan,
   CoursePlanInput,
   CoursePlanPatch,
-  EdgeSide,
+  CreditCategory,
+  CreditCategoryInput,
   Note,
   NoteInput,
   NotePatch,
@@ -108,6 +109,14 @@ interface WorkspaceValue extends Snapshot {
     checkinId: string,
     date: string
   ) => Promise<{ checked: boolean; record: CheckinRecord | null } | null>
+  createCreditCategory: (
+    input: CreditCategoryInput
+  ) => Promise<CreditCategory | null>
+  updateCreditCategory: (
+    id: string,
+    patch: Partial<CreditCategoryInput>
+  ) => Promise<CreditCategory | null>
+  deleteCreditCategory: (id: string) => Promise<void>
   cleanupData: (kind: CleanupKind) => Promise<number>
   updateSettings: (patch: SettingsPatch) => Promise<Settings>
   chooseDataDir: () => Promise<boolean>
@@ -115,10 +124,6 @@ interface WorkspaceValue extends Snapshot {
   updateStatus: UpdateStatus
   checkForUpdates: () => Promise<UpdateStatus>
   installUpdate: () => void
-  edgeHidden: boolean
-  edgeSide: EdgeSide
-  showEdgeWindow: () => void
-  hideEdgeWindow: () => void
 }
 
 const WorkspaceContext = createContext<WorkspaceValue | null>(null)
@@ -126,8 +131,6 @@ const WorkspaceContext = createContext<WorkspaceValue | null>(null)
 export function WorkspaceProvider({ children }: { children: ReactNode }): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: 'idle' })
-  const [edgeHidden, setEdgeHidden] = useState(false)
-  const [edgeSide, setEdgeSide] = useState<EdgeSide>('left')
 
   useEffect(() => {
     void window.api.getSnapshot().then(setSnapshot)
@@ -138,20 +141,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
       )
     })
     const unsubscribeUpdate = window.api.onUpdateStatus(setUpdateStatus)
-    const unsubscribeEdge = window.api.onEdgeState((state) => {
-      setEdgeHidden(state.hidden)
-      setEdgeSide(state.side)
+    const unsubscribeData = window.api.onDataChanged(() => {
+      void window.api.getSnapshot().then(setSnapshot)
     })
     return () => {
       unsubscribe()
       unsubscribeUpdate()
-      unsubscribeEdge()
+      unsubscribeData()
     }
   }, [])
-
-  useEffect(() => {
-    if (snapshot) setEdgeSide(snapshot.settings.edgeSide)
-  }, [snapshot?.settings.edgeSide])
 
   const accent = snapshot?.settings.accent
   const backgroundBlur = snapshot?.settings.backgroundBlur
@@ -612,6 +610,61 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
     return result
   }, [])
 
+  const createCreditCategory = useCallback(
+    async (input: CreditCategoryInput) => {
+      const category = await window.api.createCreditCategory(input)
+      if (category) {
+        setSnapshot((prev) =>
+          prev
+            ? {
+                ...prev,
+                creditCategories: [...prev.creditCategories, category]
+              }
+            : prev
+        )
+      }
+      return category
+    },
+    []
+  )
+
+  const updateCreditCategory = useCallback(
+    async (id: string, patch: Partial<CreditCategoryInput>) => {
+      const category = await window.api.updateCreditCategory(id, patch)
+      if (category) {
+        setSnapshot((prev) =>
+          prev
+            ? {
+                ...prev,
+                creditCategories: prev.creditCategories.map((item) =>
+                  item.id === category.id ? category : item
+                )
+              }
+            : prev
+        )
+      }
+      return category
+    },
+    []
+  )
+
+  const deleteCreditCategory = useCallback(async (id: string) => {
+    await window.api.deleteCreditCategory(id)
+    setSnapshot((prev) =>
+      prev
+        ? {
+            ...prev,
+            creditCategories: prev.creditCategories.filter(
+              (item) => item.id !== id
+            ),
+            coursePlans: prev.coursePlans.map((plan) =>
+              plan.categoryId === id ? { ...plan, categoryId: null } : plan
+            )
+          }
+        : prev
+    )
+  }, [])
+
   const cleanupData = useCallback(async (kind: CleanupKind) => {
     const result = await window.api.cleanupData(kind)
     setSnapshot(result.snapshot)
@@ -632,14 +685,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
 
   const installUpdate = useCallback(() => {
     window.api.installUpdate()
-  }, [])
-
-  const showEdgeWindow = useCallback(() => {
-    window.api.setEdgeVisible(true)
-  }, [])
-
-  const hideEdgeWindow = useCallback(() => {
-    window.api.setEdgeVisible(false)
   }, [])
 
   const chooseDataDir = useCallback(async () => {
@@ -689,17 +734,16 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
       updateCheckin,
       deleteCheckin,
       toggleCheckin,
+      createCreditCategory,
+      updateCreditCategory,
+      deleteCreditCategory,
       cleanupData,
       updateSettings,
       chooseDataDir,
       useDefaultDataDir,
       updateStatus,
       checkForUpdates,
-      installUpdate,
-      edgeHidden,
-      edgeSide,
-      showEdgeWindow,
-      hideEdgeWindow
+      installUpdate
     }
   }, [
     snapshot,
@@ -734,17 +778,16 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
     updateCheckin,
     deleteCheckin,
     toggleCheckin,
+    createCreditCategory,
+    updateCreditCategory,
+    deleteCreditCategory,
     cleanupData,
     updateSettings,
     chooseDataDir,
     useDefaultDataDir,
     updateStatus,
     checkForUpdates,
-    installUpdate,
-    edgeHidden,
-    edgeSide,
-    showEdgeWindow,
-    hideEdgeWindow
+    installUpdate
   ])
 
   if (!value) {
